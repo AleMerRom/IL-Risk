@@ -1,0 +1,4 @@
+data/liquidity_snapshots.parquet
+data/mint_burn_events.parquet
+data/slot0_snapshots.parquet
+data/swap_events.parquet
