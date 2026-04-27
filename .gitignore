@@ -1,4 +1,28 @@
-data/liquidity_snapshots.parquet
-data/mint_burn_events.parquet
-data/slot0_snapshots.parquet
-data/swap_events.parquet
+## Data outputs (parquet)
+data/**/*.parquet
+data/archive/
+data/checkpoints/
+data/raw/*/
+data/**/*.sqlite
+data/**/*.sqlite-shm
+data/**/*.sqlite-wal
+
+## Local environment
+.env
+
+## Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+dist/
+build/
+
+## OS / IDE
+.DS_Store
+.idea/
+.vscode/
