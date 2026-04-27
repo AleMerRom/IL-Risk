@@ -13,7 +13,7 @@ from il_risk.constants import POOL_ADDRESS, TOKEN0_DECIMALS, TOKEN1_DECIMALS
 from il_risk.events import SWAP_TOPIC0
 from il_risk.block_index import BlockIndex
 from il_risk.rpc import fetch_logs_chunked, fetch_logs_parallel
-from il_risk.schemas import append_rows, compact, swap_events_schema
+from il_risk.schemas import append_rows, compact, swap_events_schema, write_rows
 from il_risk.rpc import RpcClient
 
 log = logging.getLogger(__name__)
@@ -114,7 +114,10 @@ def extract_swaps(
             if block_num not in ts_by_block:
                 ts_by_block[block_num] = block_index._ts_of(block_num)  # noqa: SLF001
         rows = [_transform(lg, ts_by_block[int(lg["blockNumber"], 16)]) for lg in logs]
-        append_rows(parts_dir, rows, swap_events_schema())
+        if workers > 1:
+            write_rows(parts_dir / f"part-{lo}-{hi}.parquet", rows, swap_events_schema())
+        else:
+            append_rows(parts_dir, rows, swap_events_schema())
         log.info("swaps %d..%d: %d rows", lo, hi, len(rows))
 
     if workers > 1:

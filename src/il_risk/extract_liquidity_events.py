@@ -25,6 +25,7 @@ from il_risk.schemas import (
     collect_events_schema,
     compact,
     mint_burn_events_schema,
+    write_rows,
 )
 
 log = logging.getLogger(__name__)
@@ -34,10 +35,22 @@ _WETH_SCALE = Decimal(10) ** TOKEN1_DECIMALS
 
 def _int24_from_topic(topic: str) -> int:
     """Decode int24 right-aligned in a 32-byte ABI-encoded topic."""
-    raw = int(topic, 16) & ((1 << 24) - 1)  # keep only the lower 24 bits
-    if raw & (1 << 23):  # sign-extend if negative
-        raw -= 1 << 24
-    return raw
+    data = bytes.fromhex(topic[2:] if topic.startswith("0x") else topic)
+    try:
+        (decoded,) = abi_decode(["int24"], data)
+        return _normalize_int24(int(decoded))
+    except Exception:
+        return _normalize_int24(int(topic, 16))
+
+
+def _normalize_int24(value: int) -> int:
+    """Normalize signed int24 topics returned with occasional uint32-style padding."""
+    if value >= 1 << 31:
+        value -= 1 << 32
+    value &= (1 << 24) - 1
+    if value & (1 << 23):
+        value -= 1 << 24
+    return value
 
 
 def _decode_mint_or_burn(log_dict: dict, *, is_mint: bool) -> dict:
@@ -94,8 +107,8 @@ def _transform(log_dict: dict, timestamp: int, *, is_mint: bool) -> dict:
         "log_index": int(log_dict["logIndex"], 16),
         "event_type": "mint" if is_mint else "burn",
         "owner": ev["owner"],
-        "tick_lower": ev["tick_lower"],
-        "tick_upper": ev["tick_upper"],
+        "tick_lower": _normalize_int24(ev["tick_lower"]),
+        "tick_upper": _normalize_int24(ev["tick_upper"]),
         "liquidity_delta": Decimal(signed_liq),
         "liquidity_amount_raw": Decimal(ev["amount"]),
         "amount0_raw": Decimal(ev["amount0"]),
@@ -115,8 +128,8 @@ def _transform_collect(log_dict: dict, timestamp: int) -> dict:
         "log_index": int(log_dict["logIndex"], 16),
         "owner": ev["owner"],
         "recipient": ev["recipient"],
-        "tick_lower": ev["tick_lower"],
-        "tick_upper": ev["tick_upper"],
+        "tick_lower": _normalize_int24(ev["tick_lower"]),
+        "tick_upper": _normalize_int24(ev["tick_upper"]),
         "amount0_raw": Decimal(ev["amount0"]),
         "amount1_raw": Decimal(ev["amount1"]),
         "amount0_usdc": float(Decimal(ev["amount0"]) / _USDC_SCALE),
@@ -148,7 +161,10 @@ def _extract_one(
         rows = [
             _transform(lg, ts_cache[int(lg["blockNumber"], 16)], is_mint=is_mint) for lg in logs
         ]
-        append_rows(parts_dir, rows, mint_burn_events_schema())
+        if workers > 1:
+            write_rows(parts_dir / f"part-{lo}-{hi}.parquet", rows, mint_burn_events_schema())
+        else:
+            append_rows(parts_dir, rows, mint_burn_events_schema())
         log.info("%s %d..%d: %d rows", "mint" if is_mint else "burn", lo, hi, len(rows))
 
     if workers > 1:
@@ -222,7 +238,10 @@ def extract_collects(
             if block not in ts_cache:
                 ts_cache[block] = block_index._ts_of(block)  # noqa: SLF001
         rows = [_transform_collect(lg, ts_cache[int(lg["blockNumber"], 16)]) for lg in logs]
-        append_rows(parts_dir, rows, collect_events_schema())
+        if workers > 1:
+            write_rows(parts_dir / f"part-{lo}-{hi}.parquet", rows, collect_events_schema())
+        else:
+            append_rows(parts_dir, rows, collect_events_schema())
         log.info("collects %d..%d: %d rows", lo, hi, len(rows))
 
     if workers > 1:

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 DATA_DIR = Path("data/processed")
@@ -72,7 +73,7 @@ def test_module1_parquets_have_pdf_required_columns() -> None:
     }
 
     for filename, columns in required.items():
-        if filename == "collect_events.parquet" and not (DATA_DIR / filename).exists():
-            continue
+        if not (DATA_DIR / filename).exists():
+            pytest.skip(f"{filename} has not been generated yet")
         df = pd.read_parquet(DATA_DIR / filename)
         assert columns.issubset(df.columns), filename

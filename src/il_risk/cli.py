@@ -41,6 +41,12 @@ MODULE1_CHECKPOINTS = [
     "burn_events.json",
     "collect_events.json",
 ]
+MODULE1_PARALLEL_CHECKPOINT_DIRS = [
+    "swap_events_parallel",
+    "mint_events_parallel",
+    "burn_events_parallel",
+    "collect_events_parallel",
+]
 
 
 def _setup() -> tuple[RpcClient, Path]:
@@ -74,6 +80,8 @@ def _study_blocks(
 def _clear_module1_workdirs(data_dir: Path) -> None:
     for name in MODULE1_PART_DIRS:
         shutil.rmtree(data_dir / "raw" / name, ignore_errors=True)
+    for name in MODULE1_PARALLEL_CHECKPOINT_DIRS:
+        shutil.rmtree(data_dir / "checkpoints" / name, ignore_errors=True)
     for name in MODULE1_CHECKPOINTS:
         path = data_dir / "checkpoints" / name
         if path.exists():

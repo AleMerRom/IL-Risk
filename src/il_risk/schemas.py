@@ -118,7 +118,7 @@ def append_rows(path: Path, rows: list[dict], schema: pa.Schema) -> None:
     if not rows:
         return
     path.mkdir(parents=True, exist_ok=True)
-    table = pa.Table.from_pylist(rows, schema=schema)
+    table = pa.Table.from_pylist(_coerce_rows(rows, schema), schema=schema)
     existing = sorted(path.glob("part-*.parquet"))
     part_path = path / f"part-{len(existing):06d}.parquet"
     pq.write_table(table, part_path, compression="zstd")
@@ -129,7 +129,7 @@ def write_rows(path: Path, rows: list[dict], schema: pa.Schema) -> None:
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    table = pa.Table.from_pylist(rows, schema=schema)
+    table = pa.Table.from_pylist(_coerce_rows(rows, schema), schema=schema)
     pq.write_table(table, path, compression="zstd")
 
 
@@ -143,3 +143,19 @@ def compact(part_dir: Path, output_file: Path, schema: pa.Schema) -> int:
     merged = pa.concat_tables(tables)
     pq.write_table(merged, output_file, compression="zstd")
     return merged.num_rows
+
+
+def _coerce_rows(rows: list[dict], schema: pa.Schema) -> list[dict]:
+    """Coerce uint32-style signed values before Arrow validates int32 fields."""
+    int32_names = {field.name for field in schema if pa.types.is_int32(field.type)}
+    if not int32_names:
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        fixed = dict(row)
+        for name in int32_names:
+            value = fixed.get(name)
+            if isinstance(value, int) and value > 2**31 - 1:
+                fixed[name] = value - 2**32
+        out.append(fixed)
+    return out
