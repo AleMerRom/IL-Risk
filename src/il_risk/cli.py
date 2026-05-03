@@ -226,6 +226,28 @@ def cmd_liquidity_snapshots(
         typer.echo(f"compacted liquidity_snapshots.parquet ({rows} rows)")
 
 
+@extract_app.command("swap-mid-prices")
+def cmd_swap_mid_prices(
+    swap_events_path: Path | None = typer.Option(None, "--swap-events-path"),
+    output_path: Path | None = typer.Option(None, "--output-path"),
+    limit: int | None = typer.Option(None, "--limit"),
+) -> None:
+    """Fetch pre-swap slot0 prices for Module 3 effective spread estimates."""
+
+    from il_risk.extract_swap_mid_prices import extract_swap_mid_prices
+
+    rpc, data_dir = _setup()
+    table = extract_swap_mid_prices(
+        rpc,
+        data_dir=data_dir,
+        swap_events_path=swap_events_path,
+        output_path=output_path,
+        limit=limit,
+    )
+    path = output_path or data_dir / "processed" / "swap_mid_prices.parquet"
+    typer.echo(f"wrote {path} ({len(table)} unique swap blocks)")
+
+
 @extract_app.command("all")
 def cmd_extract_all(
     from_date: str = typer.Option(DEFAULT_START, "--from"),
