@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from eth_abi import decode as abi_decode
@@ -102,21 +103,29 @@ class RpcConfig:
 
     @classmethod
     def from_env(cls) -> RpcConfig:
-        url = os.environ.get("RPC_URL")
+        url = _validated_url(os.environ.get("RPC_URL"), "RPC_URL")
         if not url:
             raise RuntimeError("RPC_URL is not set — see .env.example")
 
         fallback_str = os.environ.get("RPC_FALLBACK_URLS", "")
-        fallbacks = [u.strip() for u in fallback_str.split(",") if u.strip()]
+        fallbacks = [
+            _validated_url(u.strip(), "RPC_FALLBACK_URLS")
+            for u in fallback_str.split(",")
+            if u.strip()
+        ]
         log_fallback_str = os.environ.get("LOG_RPC_FALLBACK_URLS", "")
-        log_fallbacks = [u.strip() for u in log_fallback_str.split(",") if u.strip()]
+        log_fallbacks = [
+            _validated_url(u.strip(), "LOG_RPC_FALLBACK_URLS")
+            for u in log_fallback_str.split(",")
+            if u.strip()
+        ]
 
         return cls(
             url=url,
             fallback_urls=fallbacks,
-            log_url=os.environ.get("LOG_RPC_URL") or None,
+            log_url=_validated_url(os.environ.get("LOG_RPC_URL"), "LOG_RPC_URL"),
             log_fallback_urls=log_fallbacks,
-            archive_url=os.environ.get("ARCHIVE_RPC_URL") or None,
+            archive_url=_validated_url(os.environ.get("ARCHIVE_RPC_URL"), "ARCHIVE_RPC_URL"),
             max_logs_per_request=int(os.environ.get("RPC_MAX_LOGS_PER_REQUEST") or 10_000),
             initial_log_chunk_blocks=int(os.environ.get("RPC_INITIAL_LOG_CHUNK_BLOCKS") or 500),
             rate_limit_rps=float(os.environ["RPC_RATE_LIMIT_RPS"])
@@ -232,10 +241,25 @@ class _UrlRotator:
 def _url_label(url: str) -> str:
     """Short human-readable label for a URL (hostname only)."""
     try:
-        from urllib.parse import urlparse
         return urlparse(url).netloc
     except Exception:
         return url[:40]
+
+
+def _validated_url(value: str | None, env_name: str) -> str | None:
+    """Return a cleaned HTTP(S) URL or raise a helpful config error."""
+    if value is None:
+        return None
+    url = value.strip()
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise RuntimeError(
+            f"{env_name} must be a full http(s) URL, got {url!r}. "
+            "Check .env for placeholders or missing https://."
+        )
+    return url
 
 
 def _hex_to_int(h: str) -> int:
@@ -252,6 +276,30 @@ def _block_to_rpc(block: int | str) -> str:
     if block in ("latest", "earliest", "pending", "safe", "finalized"):
         return block
     raise ValueError(f"bad block reference: {block!r}")
+
+
+def _validate_log_response(result: Any, url: str) -> None:
+    """Reject malformed provider log payloads before ETL writes them to disk."""
+    if not isinstance(result, list):
+        raise RpcTransientError(f"malformed eth_getLogs result from {_url_label(url)}")
+    for log_item in result:
+        if not isinstance(log_item, dict):
+            raise RpcTransientError(f"malformed eth_getLogs entry from {_url_label(url)}")
+        log_index = log_item.get("logIndex")
+        if not isinstance(log_index, str):
+            raise RpcTransientError(f"missing logIndex in eth_getLogs response from {_url_label(url)}")
+        try:
+            value = int(log_index, 16)
+        except ValueError as exc:
+            raise RpcTransientError(
+                f"bad logIndex {log_index!r} in eth_getLogs response from {_url_label(url)}"
+            ) from exc
+        # A mainnet block cannot contain anywhere near this many logs. Values
+        # like 0xfffffffc are provider-corrupt sentinels, not Ethereum log ids.
+        if value > 1_000_000:
+            raise RpcTransientError(
+                f"implausible logIndex {log_index} from {_url_label(url)}"
+            )
 
 
 # ------------------------------------------------------------------ client
@@ -357,23 +405,57 @@ class RpcClient:
                 raise RpcError(
                     f"HTTP {resp.status_code} from {_url_label(url)}: {resp.text[:200]}"
                 )
-            return resp.json()
+            try:
+                return resp.json()
+            except ValueError as exc:
+                raise RpcTransientError(
+                    f"invalid JSON from {_url_label(url)}: {resp.text[:200]}"
+                ) from exc
 
         return _do()
 
     def _parse_rpc_result(self, data: Any, url: str) -> Any:
         """Parse JSON-RPC envelope; raise typed exceptions for error responses."""
+        if not isinstance(data, dict):
+            raise RpcTransientError(f"malformed JSON-RPC response from {_url_label(url)}")
         if "error" not in data:
+            if "result" not in data:
+                raise RpcTransientError(f"missing JSON-RPC result from {_url_label(url)}")
             return data["result"]
         err = data["error"]
-        msg = err.get("message", str(err))
+        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
         low = msg.lower()
-        if any(h in low for h in ("too many", "query returned more than", "response size",
+        if any(
+            h in low
+            for h in (
+                "too many requests",
+                "rate limit",
+                "request limit",
+                "compute units",
+                "daily limit",
+                "quota",
+                "throttle",
+            )
+        ):
+            raise RateLimitError(f"{_url_label(url)}: {msg}")
+        if any(h in low for h in ("query returned more than", "response size",
                                    "block range", "range too large", "exceeds maximum")):
             raise TooManyResultsError(msg)
-        if any(h in low for h in ("rate limit", "request limit", "compute units", "daily limit")):
-            raise RateLimitError(f"{_url_label(url)}: {msg}")
-        if any(h in low for h in ("timeout", "temporarily", "overloaded")):
+        transient_hints = (
+            "timeout",
+            "temporarily",
+            "temporary",
+            "overloaded",
+            "upstream",
+            "unreachable",
+            "connection",
+            "bad gateway",
+            "gateway timeout",
+            "service unavailable",
+            "try again",
+            "cannot parse json-rpc response",
+        )
+        if any(h in low for h in transient_hints):
             raise RpcTransientError(msg)
         raise RpcError(msg)
 
@@ -387,8 +469,31 @@ class RpcClient:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
 
         if archive and self._cfg.archive_url:
-            data = self._post_one(self._cfg.archive_url, self._archive_session, payload)
-            return self._parse_rpc_result(data, self._cfg.archive_url)
+            for attempt in range(1, self._cfg.retry_attempts + 1):
+                try:
+                    data = self._post_one(self._cfg.archive_url, self._archive_session, payload)
+                    return self._parse_rpc_result(data, self._cfg.archive_url)
+                except RateLimitError:
+                    if attempt >= self._cfg.retry_attempts:
+                        raise
+                    log.warning(
+                        "archive endpoint rate-limited; sleeping %.1fs before retry %d/%d",
+                        self._cfg.rate_limit_cooldown,
+                        attempt + 1,
+                        self._cfg.retry_attempts,
+                    )
+                    time.sleep(self._cfg.rate_limit_cooldown)
+                except RpcTransientError as exc:
+                    if attempt >= self._cfg.retry_attempts:
+                        raise
+                    log.warning(
+                        "archive endpoint transient error (%s); retry %d/%d after %.1fs",
+                        exc,
+                        attempt + 1,
+                        self._cfg.retry_attempts,
+                        self._cfg.retry_min_wait,
+                    )
+                    time.sleep(self._cfg.retry_min_wait)
 
         rotator = self._log_rotator if logs else self._rotator
         tried_urls: set[str] = set()
@@ -399,6 +504,8 @@ class RpcClient:
             try:
                 data = self._post_one(url, self._session, payload)
                 result = self._parse_rpc_result(data, url)
+                if logs and method == "eth_getLogs":
+                    _validate_log_response(result, url)
                 rotator.mark_success(url)
                 return result
             except RateLimitError as exc:
@@ -446,7 +553,10 @@ class RpcClient:
 
     def chain_id(self) -> int:
         if self._chain_id is None:
-            self._chain_id = _hex_to_int(self._rpc("eth_chainId", []))
+            if self._cfg.archive_url:
+                self._chain_id = _hex_to_int(self._rpc("eth_chainId", [], archive=True))
+            else:
+                self._chain_id = _hex_to_int(self._rpc("eth_chainId", []))
         return self._chain_id
 
     def get_block_number(self) -> int:
@@ -538,6 +648,11 @@ class RpcClient:
         if self._supports_archive is None:
             self._supports_archive = self._probe_archive()
         return self._supports_archive
+
+    @property
+    def has_archive_url(self) -> bool:
+        """True when a dedicated archive endpoint is configured."""
+        return bool(self._cfg.archive_url)
 
     def _probe_archive(self) -> bool:
         try:
@@ -641,6 +756,16 @@ def fetch_logs_chunked(
             ceiling = chunk
             log.info("shrinking log chunk to %d blocks and retrying", chunk)
             continue
+        except RpcTransientError as exc:
+            log.warning(
+                "transient RPC failure for window %d..%d (%s); sleeping %.1fs",
+                cursor,
+                window_end,
+                exc,
+                rpc._cfg.rate_limit_cooldown,  # noqa: SLF001
+            )
+            time.sleep(rpc._cfg.rate_limit_cooldown)  # noqa: SLF001
+            continue
         on_batch(logs, cursor, window_end)
         total += len(logs)
         if checkpoint_path is not None:
@@ -742,6 +867,17 @@ def fetch_logs_parallel(
                     pending_chunks.append((lo, hi))
                     log.warning(
                         "throttled window %d..%d (%s); requeue after %.1fs",
+                        lo,
+                        hi,
+                        exc,
+                        rpc._cfg.rate_limit_cooldown,  # noqa: SLF001
+                    )
+                    time.sleep(rpc._cfg.rate_limit_cooldown)  # noqa: SLF001
+                    continue
+                except RpcTransientError as exc:
+                    pending_chunks.append((lo, hi))
+                    log.warning(
+                        "transient RPC failure for window %d..%d (%s); requeue after %.1fs",
                         lo,
                         hi,
                         exc,

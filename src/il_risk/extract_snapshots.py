@@ -22,7 +22,7 @@ from datetime import timezone, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-import polars as pl
+import pyarrow.parquet as pq
 from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
 from eth_utils import keccak
@@ -143,9 +143,13 @@ def snapshot_path_a(rpc: RpcClient, block: int) -> list[TickDetails]:
 
 def snapshot_path_b(mint_burn_parquet: Path, snapshot_block: int) -> list[TickDetails]:
     """Replay the ``mint_burn_events`` parquet up to ``snapshot_block`` inclusive."""
-    df = pl.read_parquet(mint_burn_parquet).filter(pl.col("block_number") <= snapshot_block)
+    table = pq.read_table(
+        mint_burn_parquet,
+        columns=["block_number", "event_type", "tick_lower", "tick_upper", "liquidity_delta"],
+        filters=[("block_number", "<=", snapshot_block)],
+    )
     positions: dict[int, dict[str, int]] = {}
-    for row in df.iter_rows(named=True):
+    for row in table.to_pylist():
         delta = int(row["liquidity_delta"])
         lower, upper = row["tick_lower"], row["tick_upper"]
         for t, net_sign in ((lower, +1), (upper, -1)):
@@ -265,10 +269,12 @@ def extract_liquidity_snapshots_daily(
     force_path_b: bool = False,
     mint_burn_parquet: Path | None = None,
 ) -> int:
-    block_index = BlockIndex(rpc, cache_path=out_dir / "checkpoints" / "block_index.sqlite")
     parts_dir = out_dir / "raw" / "liquidity_snapshots_parts"
 
-    use_path_b = force_path_b or not rpc.supports_archive
+    use_path_b = force_path_b or not (rpc.has_archive_url or rpc.supports_archive)
+    slot0_schedule = _load_slot0_snapshot_schedule(out_dir / "processed" / "slot0_snapshots.parquet")
+    if slot0_schedule:
+        log.info("using %d slot0 snapshot blocks for liquidity snapshots", len(slot0_schedule))
     if use_path_b:
         if mint_burn_parquet is None:
             mint_burn_parquet = out_dir / "processed" / "mint_burn_events.parquet"
@@ -277,11 +283,22 @@ def extract_liquidity_snapshots_daily(
                 f"Path B requires {mint_burn_parquet} — run `il_risk extract mints-burns` first"
             )
 
+    block_index = None
+    if slot0_schedule is None:
+        block_index = BlockIndex(rpc, cache_path=out_dir / "checkpoints" / "block_index.sqlite")
+
     day = start
     total_rows = 0
     while day <= end:
-        block = block_index.closest_block_at_timestamp(_snapshot_ts(day))
-        ts = block_index._ts_of(block)  # noqa: SLF001
+        if slot0_schedule is not None:
+            if day not in slot0_schedule:
+                raise KeyError(f"{day.isoformat()} missing from slot0 snapshot schedule")
+            block, snapshot_timestamp = slot0_schedule[day]
+        else:
+            assert block_index is not None
+            block = block_index.closest_block_at_timestamp(_snapshot_ts(day))
+            ts = block_index._ts_of(block)  # noqa: SLF001
+            snapshot_timestamp = datetime.fromtimestamp(ts, tz=timezone.utc)
         if use_path_b:
             details = snapshot_path_b(mint_burn_parquet, block)  # type: ignore[arg-type]
         else:
@@ -294,7 +311,7 @@ def extract_liquidity_snapshots_daily(
             rows.append({
                 "date": day.isoformat(),
                 "snapshot_block": block,
-                "snapshot_timestamp": datetime.fromtimestamp(ts, tz=timezone.utc),
+                "snapshot_timestamp": snapshot_timestamp,
                 "tick": d.tick,
                 "liquidityNet": Decimal(d.liquidity_net),
                 "liquidityGross": Decimal(d.liquidity_gross),
@@ -309,6 +326,28 @@ def extract_liquidity_snapshots_daily(
         log.info("liquidity %s @ block %d: %d ticks", day.isoformat(), block, len(rows))
         day += timedelta(days=1)
     return total_rows
+
+
+def _load_slot0_snapshot_schedule(path: Path) -> dict[date, tuple[int, datetime]] | None:
+    """Load the validated slot0 daily block schedule, if available.
+
+    Event-replay liquidity snapshots should use the exact same snapshot blocks
+    as ``slot0_snapshots.parquet``. That avoids a second RPC-dependent midnight
+    block lookup and prevents tiny block mismatches between the two outputs.
+    """
+    if not path.exists():
+        return None
+    table = pq.read_table(path, columns=["date", "snapshot_block", "snapshot_timestamp"])
+    schedule: dict[date, tuple[int, datetime]] = {}
+    for row in table.to_pylist():
+        day = date.fromisoformat(row["date"])
+        ts = row["snapshot_timestamp"]
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        else:
+            ts = ts.astimezone(timezone.utc)
+        schedule[day] = (int(row["snapshot_block"]), ts)
+    return schedule
 
 
 def compact_liquidity_snapshots(out_dir: Path) -> int:

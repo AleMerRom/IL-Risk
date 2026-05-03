@@ -24,6 +24,7 @@ from il_risk.schemas import (
     append_rows,
     collect_events_schema,
     compact,
+    compact_files,
     mint_burn_events_schema,
     write_rows,
 )
@@ -150,6 +151,8 @@ def _extract_one(
     workers: int = 1,
     chunk_blocks: int | None = None,
 ) -> int:
+    event_name = "mint" if is_mint else "burn"
+
     def on_batch(logs: list[dict], lo: int, hi: int) -> None:
         if not logs:
             return
@@ -161,11 +164,8 @@ def _extract_one(
         rows = [
             _transform(lg, ts_cache[int(lg["blockNumber"], 16)], is_mint=is_mint) for lg in logs
         ]
-        if workers > 1:
-            write_rows(parts_dir / f"part-{lo}-{hi}.parquet", rows, mint_burn_events_schema())
-        else:
-            append_rows(parts_dir, rows, mint_burn_events_schema())
-        log.info("%s %d..%d: %d rows", "mint" if is_mint else "burn", lo, hi, len(rows))
+        write_rows(parts_dir / f"part-{event_name}-{lo}-{hi}.parquet", rows, mint_burn_events_schema())
+        log.info("%s %d..%d: %d rows", event_name, lo, hi, len(rows))
 
     if workers > 1:
         name = "mint_events" if is_mint else "burn_events"
@@ -209,8 +209,22 @@ def extract_mints_burns(
 
 
 def compact_mints_burns(out_dir: Path) -> int:
-    return compact(
-        out_dir / "raw" / "mint_burn_events_parts",
+    part_dir = out_dir / "raw" / "mint_burn_events_parts"
+    stale_parts = sorted(part_dir.glob("part-[0-9]*.parquet"))
+    if stale_parts:
+        raise RuntimeError(
+            "stale unprefixed mint/burn part files found; move or delete "
+            f"{part_dir}/part-[0-9]*.parquet before compacting"
+        )
+    mint_parts = sorted(part_dir.glob("part-mint-*.parquet"))
+    burn_parts = sorted(part_dir.glob("part-burn-*.parquet"))
+    if not mint_parts or not burn_parts:
+        raise RuntimeError(
+            "mint/burn compaction requires both part-mint-*.parquet and "
+            "part-burn-*.parquet files from a clean extraction"
+        )
+    return compact_files(
+        mint_parts + burn_parts,
         out_dir / "processed" / "mint_burn_events.parquet",
         mint_burn_events_schema(),
     )
