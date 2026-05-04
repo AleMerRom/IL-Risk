@@ -322,8 +322,11 @@ class RpcClient:
 
         # One rate-limiter per URL so each endpoint's quota is respected
         # independently — cycling to a fresh URL gets a fresh token bucket.
+        limiter_urls = all_urls + log_urls
+        if config.archive_url:
+            limiter_urls.append(config.archive_url)
         self._limiters: dict[str, _RateLimiter] = {
-            url: _RateLimiter(config.rate_limit_rps) for url in sorted(set(all_urls + log_urls))
+            url: _RateLimiter(config.rate_limit_rps) for url in sorted(set(limiter_urls))
         }
 
         self._session = requests.Session()
@@ -529,8 +532,14 @@ class RpcClient:
                 next_url = rotator.mark_rate_limited(url)
                 url = self._handle_exhausted(rotator, tried_urls, next_url, exc)
 
-    def _rpc_batch(self, method: str, params_list: list[list[Any]]) -> list[Any]:
-        """Execute a JSON-RPC batch on the standard endpoint pool."""
+    def _rpc_batch(
+        self,
+        method: str,
+        params_list: list[list[Any]],
+        *,
+        archive: bool = False,
+    ) -> list[Any]:
+        """Execute a JSON-RPC batch."""
         if not params_list:
             return []
 
@@ -538,6 +547,46 @@ class RpcClient:
             {"jsonrpc": "2.0", "id": idx, "method": method, "params": params}
             for idx, params in enumerate(params_list)
         ]
+
+        if archive and self._cfg.archive_url:
+            for attempt in range(1, self._cfg.retry_attempts + 1):
+                try:
+                    data = self._post_one(self._cfg.archive_url, self._archive_session, payload)
+                    if not isinstance(data, list):
+                        raise RpcTransientError(
+                            f"malformed JSON-RPC batch from {_url_label(self._cfg.archive_url)}"
+                        )
+                    by_id = {item.get("id"): item for item in data if isinstance(item, dict)}
+                    if len(by_id) != len(payload):
+                        raise RpcTransientError(
+                            f"incomplete JSON-RPC batch from {_url_label(self._cfg.archive_url)}"
+                        )
+                    return [
+                        self._parse_rpc_result(by_id[idx], self._cfg.archive_url)
+                        for idx in range(len(payload))
+                    ]
+                except RateLimitError:
+                    if attempt >= self._cfg.retry_attempts:
+                        raise
+                    log.warning(
+                        "archive endpoint rate-limited on batch; sleeping %.1fs before retry %d/%d",
+                        self._cfg.rate_limit_cooldown,
+                        attempt + 1,
+                        self._cfg.retry_attempts,
+                    )
+                    time.sleep(self._cfg.rate_limit_cooldown)
+                except RpcTransientError as exc:
+                    if attempt >= self._cfg.retry_attempts:
+                        raise
+                    log.warning(
+                        "archive endpoint transient batch error (%s); retry %d/%d after %.1fs",
+                        exc,
+                        attempt + 1,
+                        self._cfg.retry_attempts,
+                        self._cfg.retry_min_wait,
+                    )
+                    time.sleep(self._cfg.retry_min_wait)
+
         rotator = self._rotator
         tried_urls: set[str] = set()
         url = rotator.current()
@@ -679,6 +728,52 @@ class RpcClient:
         if key is not None:
             self._cache.put(key, result)
         return result
+
+    def call_many(
+        self,
+        calls: Iterable[tuple[str, bytes, int | str]],
+        *,
+        batch_size: int = 100,
+    ) -> list[bytes]:
+        """Execute many ``eth_call`` requests, preserving input order."""
+
+        call_list = list(calls)
+        out: list[bytes | None] = [None] * len(call_list)
+        missing: list[tuple[int, str, bytes, int | str, str | None]] = []
+        for idx, (to, data, block) in enumerate(call_list):
+            block_ref = _block_to_rpc(block)
+            key = (
+                self._cache_key("eth_call", block_ref, to.lower(), data.hex())
+                if isinstance(block, int)
+                else None
+            )
+            if key is not None:
+                hit = self._cache.get(key)
+                if hit is not None:
+                    out[idx] = hit
+                    continue
+            missing.append((idx, to, data, block, key))
+
+        for start in range(0, len(missing), batch_size):
+            batch = missing[start : start + batch_size]
+            params = [
+                [{"to": to, "data": "0x" + data.hex()}, _block_to_rpc(block)]
+                for _idx, to, data, block, _key in batch
+            ]
+            archive = all(isinstance(block, int) for _idx, _to, _data, block, _key in batch)
+            result_hexes = self._rpc_batch("eth_call", params, archive=archive)
+            for (idx, _to, _data, _block, key), result_hex in zip(batch, result_hexes, strict=True):
+                result = bytes.fromhex(result_hex[2:])
+                out[idx] = result
+                if key is not None:
+                    self._cache.put(key, result)
+
+        final: list[bytes] = []
+        for idx, result in enumerate(out):
+            if result is None:
+                raise RpcTransientError(f"missing eth_call result at batch position {idx}")
+            final.append(result)
+        return final
 
     def get_logs(
         self,

@@ -234,6 +234,8 @@ def cmd_swap_mid_prices(
     include_timestamps: bool = typer.Option(False, "--include-timestamps"),
     from_block: int | None = typer.Option(None, "--from-block"),
     to_block: int | None = typer.Option(None, "--to-block"),
+    batch_size: int = typer.Option(100, "--batch-size"),
+    resume: bool = typer.Option(True, "--resume/--no-resume"),
 ) -> None:
     """Fetch pre-swap slot0 prices for Module 3 effective spread estimates."""
 
@@ -249,6 +251,8 @@ def cmd_swap_mid_prices(
         include_timestamps=include_timestamps,
         from_block=from_block,
         to_block=to_block,
+        batch_size=batch_size,
+        resume=resume,
     )
     path = output_path or data_dir / "processed" / "swap_mid_prices.parquet"
     typer.echo(f"wrote {path} ({len(table)} unique swap blocks)")
