@@ -207,7 +207,7 @@ def validate_liquidity_ticks_against_rpc(
     from eth_utils import keccak
 
     from il_risk.constants import POOL_ADDRESS
-    from il_risk.rpc import Call
+    from il_risk.rpc.client import Call
 
     liquidity = pd.read_parquet(data_dir / "processed" / "liquidity_snapshots.parquet")
     if snapshot_block is None:

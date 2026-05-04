@@ -11,7 +11,7 @@ from typing import Iterable
 import pandas as pd
 
 from il_risk.constants import FEE_TIER
-from il_risk.swap_simulator import Direction, simulate_swap
+from il_risk.uniswap_v3.swap_simulator import Direction, simulate_swap
 
 DEFAULT_TRADE_SIZES_USD = (1_000, 10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000)
 DEFAULT_DIRECTIONS: tuple[Direction, Direction] = ("buy_weth", "sell_weth")

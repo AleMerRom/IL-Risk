@@ -12,7 +12,7 @@ from eth_abi import decode as abi_decode
 from eth_utils import keccak
 
 from il_risk.constants import POOL_ADDRESS, Q96, TOKEN0_DECIMALS, TOKEN1_DECIMALS
-from il_risk.rpc import RpcClient
+from il_risk.rpc.client import RpcClient
 
 log = logging.getLogger(__name__)
 

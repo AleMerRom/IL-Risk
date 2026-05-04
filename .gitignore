@@ -11,6 +11,9 @@ data/**/*.sqlite-wal
 ## Local environment
 .env
 
+## Logs
+logs/
+
 ## Python
 __pycache__/
 *.py[cod]

@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pandas as pd
 
-from il_risk.slippage_analysis import (
+from il_risk.pipelines.module3.slippage_analysis import (
     assign_trade_size_bucket,
     compute_effective_spreads,
     plot_price_impact_curves,
@@ -13,7 +13,7 @@ from il_risk.slippage_analysis import (
     summarize_effective_spreads,
     summarize_price_impact,
 )
-from il_risk.tickmath import get_sqrt_ratio_at_tick
+from il_risk.uniswap_v3.math import get_sqrt_ratio_at_tick
 
 
 def test_run_simulation_grid_with_synthetic_snapshots(tmp_path) -> None:

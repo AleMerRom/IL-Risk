@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence
 
 from il_risk.constants import FEE_TIER, Q96, TOKEN0_DECIMALS, TOKEN1_DECIMALS
-from il_risk.tickmath import get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio
+from il_risk.uniswap_v3.math import get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio
 
 getcontext().prec = 80
 

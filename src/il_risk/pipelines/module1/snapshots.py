@@ -29,10 +29,10 @@ from eth_utils import keccak
 
 from il_risk.constants import POOL_ADDRESS, TICK_SPACING
 from il_risk.constants import TOKEN0_DECIMALS, TOKEN1_DECIMALS
-from il_risk.tickmath import MAX_TICK, MIN_TICK
-from il_risk.block_index import BlockIndex
+from il_risk.uniswap_v3.math import MAX_TICK, MIN_TICK
+from il_risk.rpc.block_index import BlockIndex
 from il_risk.schemas import append_rows, compact, liquidity_snapshot_schema, slot0_schema
-from il_risk.rpc import Call, RpcClient
+from il_risk.rpc.client import Call, RpcClient
 
 log = logging.getLogger(__name__)
 

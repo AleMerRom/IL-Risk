@@ -16,10 +16,10 @@ from eth_abi import decode as abi_decode
 
 from il_risk.constants import POOL_ADDRESS
 from il_risk.constants import TOKEN0_DECIMALS, TOKEN1_DECIMALS
-from il_risk.events import BURN_TOPIC0, COLLECT_TOPIC0, MINT_TOPIC0
-from il_risk.extract_swaps import _ts_to_date
-from il_risk.block_index import BlockIndex
-from il_risk.rpc import RpcClient, fetch_logs_chunked, fetch_logs_parallel
+from il_risk.uniswap_v3.events import BURN_TOPIC0, COLLECT_TOPIC0, MINT_TOPIC0
+from il_risk.pipelines.module1.swaps import _ts_to_date
+from il_risk.rpc.block_index import BlockIndex
+from il_risk.rpc.client import RpcClient, fetch_logs_chunked, fetch_logs_parallel
 from il_risk.schemas import (
     append_rows,
     collect_events_schema,

@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from il_risk.rpc import RpcClient
+from il_risk.rpc.client import RpcClient
 
 
 class BlockIndex:

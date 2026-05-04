@@ -1,6 +1,6 @@
 import pytest
 
-from il_risk.rpc import (
+from il_risk.rpc.client import (
     RateLimitError,
     RpcClient,
     RpcConfig,
