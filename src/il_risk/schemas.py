@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 DEC = pa.decimal128(38, 0)
@@ -136,24 +137,46 @@ def write_rows(path: Path, rows: list[dict], schema: pa.Schema) -> None:
 def compact(part_dir: Path, output_file: Path, schema: pa.Schema) -> int:
     """Merge all ``part-*.parquet`` files under ``part_dir`` into ``output_file``."""
     parts = sorted(part_dir.glob("part-*.parquet"))
+    return compact_files(parts, output_file, schema)
+
+
+def compact_files(parts: list[Path], output_file: Path, schema: pa.Schema) -> int:
+    """Merge explicit parquet part files into ``output_file``."""
     if not parts:
         return 0
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    tables = [pq.read_table(p, schema=schema) for p in parts]
-    merged = pa.concat_tables(tables)
-    pq.write_table(merged, output_file, compression="zstd")
-    return merged.num_rows
+    total_rows = 0
+    with pq.ParquetWriter(output_file, schema=schema, compression="zstd") as writer:
+        for part in parts:
+            table = pq.read_table(part, schema=schema)
+            if "log_index" in table.column_names and table.num_rows:
+                log_index = table.column("log_index")
+                if int(pc.min(log_index).as_py()) < 0:
+                    raise ValueError(
+                        f"cannot compact event part with negative log_index values: {part}"
+                    )
+            writer.write_table(table)
+            total_rows += table.num_rows
+    return total_rows
 
 
 def _coerce_rows(rows: list[dict], schema: pa.Schema) -> list[dict]:
-    """Coerce uint32-style signed values before Arrow validates int32 fields."""
-    int32_names = {field.name for field in schema if pa.types.is_int32(field.type)}
-    if not int32_names:
-        return rows
+    """Coerce only signed tick fields before Arrow validates int32 columns."""
+    tick_names = {
+        field.name
+        for field in schema
+        if pa.types.is_int32(field.type)
+        and field.name in {"tick", "tick_lower", "tick_upper", "current_tick"}
+    }
     out: list[dict] = []
     for row in rows:
         fixed = dict(row)
-        for name in int32_names:
+        log_index = fixed.get("log_index")
+        if isinstance(log_index, int) and log_index < 0:
+            raise ValueError(f"invalid negative log_index: {log_index}")
+        if isinstance(log_index, int) and log_index > 2**31 - 1:
+            raise ValueError(f"invalid oversized log_index: {log_index}")
+        for name in tick_names:
             value = fixed.get(name)
             if isinstance(value, int) and value > 2**31 - 1:
                 fixed[name] = value - 2**32

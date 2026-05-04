@@ -2,6 +2,7 @@
 data/**/*.parquet
 data/archive/
 data/checkpoints/
+data/processed/exports
 data/raw/*/
 data/**/*.sqlite
 data/**/*.sqlite-shm
@@ -9,6 +10,9 @@ data/**/*.sqlite-wal
 
 ## Local environment
 .env
+
+## Logs
+logs/
 
 ## Python
 __pycache__/

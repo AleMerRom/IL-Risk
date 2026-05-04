@@ -99,6 +99,7 @@ def validate_module1(data_dir: Path) -> list[str]:
         messages.append(f"OK schema: {filename} ({len(df):,} rows)")
 
     swaps = frames["swap_events.parquet"]
+    _validate_event_log_identity(swaps, "swap_events.parquet")
     if swaps["block_timestamp"].min() < STUDY_START or swaps["block_timestamp"].max() > STUDY_END:
         raise AssertionError("swap_events.parquet is not bounded to the study window")
     messages.append("OK coverage: swaps are bounded to the study window")
@@ -106,7 +107,29 @@ def validate_module1(data_dir: Path) -> list[str]:
     mint_burn = frames["mint_burn_events.parquet"]
     if int(mint_burn["block_number"].min()) > POOL_DEPLOYMENT_BLOCK + 100_000:
         raise AssertionError("mint_burn_events.parquet does not start near pool deployment")
+    if (mint_burn["log_index"] < 0).any():
+        raise AssertionError("mint_burn_events.parquet contains negative log_index values")
+    if mint_burn.duplicated(["tx_hash", "log_index"]).any():
+        raise AssertionError("mint_burn_events.parquet contains duplicate tx_hash/log_index rows")
+    if not set(mint_burn["event_type"]).issubset({"mint", "burn"}):
+        raise AssertionError("mint_burn_events.parquet contains unexpected event_type values")
+    bad_ticks = (
+        (mint_burn["tick_lower"] >= mint_burn["tick_upper"])
+        | (mint_burn["tick_lower"] % 10 != 0)
+        | (mint_burn["tick_upper"] % 10 != 0)
+    )
+    if bad_ticks.any():
+        raise AssertionError("mint_burn_events.parquet contains invalid tick ranges")
+    bad_sign = (
+        ((mint_burn["event_type"] == "mint") & (mint_burn["liquidity_delta"].map(int) <= 0))
+        | ((mint_burn["event_type"] == "burn") & (mint_burn["liquidity_delta"].map(int) > 0))
+    )
+    if bad_sign.any():
+        raise AssertionError("mint_burn_events.parquet has liquidity_delta signs inconsistent with event_type")
     messages.append("OK coverage: mint/burn history starts near deployment")
+
+    collects = frames["collect_events.parquet"]
+    _validate_event_log_identity(collects, "collect_events.parquet")
 
     slot0 = frames["slot0_snapshots.parquet"]
     if len(slot0) != EXPECTED_DAYS:
@@ -126,6 +149,15 @@ def validate_module1(data_dir: Path) -> list[str]:
     messages.append("OK coverage: liquidity has 182 distinct snapshot blocks")
 
     return messages
+
+
+def _validate_event_log_identity(df: pd.DataFrame, filename: str) -> None:
+    if (df["log_index"] < 0).any():
+        raise AssertionError(f"{filename} contains negative log_index values")
+    if (df["log_index"] > 1_000_000).any():
+        raise AssertionError(f"{filename} contains implausibly large log_index values")
+    if df.duplicated(["tx_hash", "log_index"]).any():
+        raise AssertionError(f"{filename} contains duplicate tx_hash/log_index rows")
 
 
 def validate_slot0_against_swaps(data_dir: Path, tolerance_bps: float = 1.0) -> pd.DataFrame:
@@ -175,7 +207,7 @@ def validate_liquidity_ticks_against_rpc(
     from eth_utils import keccak
 
     from il_risk.constants import POOL_ADDRESS
-    from il_risk.rpc import Call
+    from il_risk.rpc.client import Call
 
     liquidity = pd.read_parquet(data_dir / "processed" / "liquidity_snapshots.parquet")
     if snapshot_block is None:

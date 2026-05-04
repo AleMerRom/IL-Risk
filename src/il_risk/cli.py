@@ -10,9 +10,9 @@ from pathlib import Path
 import typer
 from dotenv import load_dotenv
 
-from il_risk.block_index import BlockIndex
+from il_risk.rpc.block_index import BlockIndex
 from il_risk.constants import POOL_DEPLOYMENT_BLOCK
-from il_risk.rpc import RpcClient, RpcConfig
+from il_risk.rpc.client import RpcClient, RpcConfig
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 extract_app = typer.Typer(no_args_is_help=True, help="Module 1 on-chain extraction")
@@ -116,7 +116,7 @@ def cmd_swaps(
 ) -> None:
     """Fetch Swap events for the study window."""
 
-    from il_risk.extract_swaps import compact_swaps, extract_swaps
+    from il_risk.pipelines.module1.swaps import compact_swaps, extract_swaps
 
     rpc, data_dir = _setup()
     if from_block is None or to_block is None:
@@ -142,7 +142,7 @@ def cmd_mints_burns(
 ) -> None:
     """Fetch complete Mint/Burn history from deployment through the end date."""
 
-    from il_risk.extract_liquidity_events import compact_mints_burns, extract_mints_burns
+    from il_risk.pipelines.module1.liquidity_events import compact_mints_burns, extract_mints_burns
 
     rpc, data_dir = _setup()
     index = BlockIndex(rpc, cache_path=data_dir / "checkpoints" / "block_index.sqlite")
@@ -166,7 +166,7 @@ def cmd_collects(
 ) -> None:
     """Fetch complete Collect history from deployment through the end date."""
 
-    from il_risk.extract_liquidity_events import compact_collects, extract_collects
+    from il_risk.pipelines.module1.liquidity_events import compact_collects, extract_collects
 
     rpc, data_dir = _setup()
     index = BlockIndex(rpc, cache_path=data_dir / "checkpoints" / "block_index.sqlite")
@@ -188,7 +188,7 @@ def cmd_slot0(
 ) -> None:
     """Fetch daily slot0 snapshots at blocks closest to 00:00 UTC."""
 
-    from il_risk.extract_snapshots import compact_slot0, extract_slot0_daily
+    from il_risk.pipelines.module1.snapshots import compact_slot0, extract_slot0_daily
 
     rpc, data_dir = _setup()
     count = extract_slot0_daily(rpc, _parse_date(from_date), _parse_date(to_date), out_dir=data_dir)
@@ -207,7 +207,7 @@ def cmd_liquidity_snapshots(
 ) -> None:
     """Fetch daily tick-level liquidity maps at blocks closest to 00:00 UTC."""
 
-    from il_risk.extract_snapshots import (
+    from il_risk.pipelines.module1.snapshots import (
         compact_liquidity_snapshots,
         extract_liquidity_snapshots_daily,
     )
@@ -224,6 +224,38 @@ def cmd_liquidity_snapshots(
     if compact_output:
         rows = compact_liquidity_snapshots(data_dir)
         typer.echo(f"compacted liquidity_snapshots.parquet ({rows} rows)")
+
+
+@extract_app.command("swap-mid-prices")
+def cmd_swap_mid_prices(
+    swap_events_path: Path | None = typer.Option(None, "--swap-events-path"),
+    output_path: Path | None = typer.Option(None, "--output-path"),
+    limit: int | None = typer.Option(None, "--limit"),
+    include_timestamps: bool = typer.Option(False, "--include-timestamps"),
+    from_block: int | None = typer.Option(None, "--from-block"),
+    to_block: int | None = typer.Option(None, "--to-block"),
+    batch_size: int = typer.Option(100, "--batch-size"),
+    resume: bool = typer.Option(True, "--resume/--no-resume"),
+) -> None:
+    """Fetch pre-swap slot0 prices for Module 3 effective spread estimates."""
+
+    from il_risk.pipelines.module1.compact import extract_swap_mid_prices
+
+    rpc, data_dir = _setup()
+    table = extract_swap_mid_prices(
+        rpc,
+        data_dir=data_dir,
+        swap_events_path=swap_events_path,
+        output_path=output_path,
+        limit=limit,
+        include_timestamps=include_timestamps,
+        from_block=from_block,
+        to_block=to_block,
+        batch_size=batch_size,
+        resume=resume,
+    )
+    path = output_path or data_dir / "processed" / "swap_mid_prices.parquet"
+    typer.echo(f"wrote {path} ({len(table)} unique swap blocks)")
 
 
 @extract_app.command("all")
@@ -277,7 +309,7 @@ def cmd_extract_all(
 def cmd_validate(data_dir: Path = typer.Option(Path("data"), "--data-dir")) -> None:
     """Validate Module 1 processed Parquets."""
 
-    from il_risk.validate_module1 import validate_module1
+    from il_risk.pipelines.module1.validate import validate_module1
 
     for message in validate_module1(data_dir):
         typer.echo(message)
@@ -287,7 +319,7 @@ def cmd_validate(data_dir: Path = typer.Option(Path("data"), "--data-dir")) -> N
 def cmd_validation_tables(data_dir: Path = typer.Option(Path("data"), "--data-dir")) -> None:
     """Write report-ready validation tables that do not require RPC."""
 
-    from il_risk.validate_module1 import validate_slot0_against_swaps
+    from il_risk.pipelines.module1.validate import validate_slot0_against_swaps
 
     out_dir = data_dir / "processed"
     table = validate_slot0_against_swaps(data_dir)
@@ -304,7 +336,7 @@ def cmd_onchain_tick_check(
 ) -> None:
     """Compare sampled liquidity ticks against direct archive pool.ticks() calls."""
 
-    from il_risk.validate_module1 import validate_liquidity_ticks_against_rpc
+    from il_risk.pipelines.module1.validate import validate_liquidity_ticks_against_rpc
 
     rpc, _ = _setup()
     table = validate_liquidity_ticks_against_rpc(

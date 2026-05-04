@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from il_risk.rpc import RpcClient
+from il_risk.rpc.client import RpcClient
 
 
 class BlockIndex:
@@ -41,6 +41,39 @@ class BlockIndex:
                 "INSERT OR REPLACE INTO block_ts(block, timestamp) VALUES (?, ?)", (block, ts)
             )
         return ts
+
+    def ts_many(self, blocks: list[int] | set[int]) -> dict[int, int]:
+        """Return timestamps for many blocks, batching cache misses."""
+        unique = sorted(set(blocks))
+        if not unique:
+            return {}
+
+        cached: dict[int, int] = {}
+        with self._lock, self._conn() as conn:
+            for start in range(0, len(unique), 900):
+                chunk = unique[start : start + 900]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT block, timestamp FROM block_ts WHERE block IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                cached.update((int(block), int(ts)) for block, ts in rows)
+
+        missing = [block for block in unique if block not in cached]
+        if missing:
+            fetched = self._rpc.get_blocks(missing)
+            rows_to_insert: list[tuple[int, int]] = []
+            for block in missing:
+                blk = fetched[block]
+                ts = int(blk["timestamp"], 16) if isinstance(blk["timestamp"], str) else int(blk["timestamp"])
+                cached[block] = ts
+                rows_to_insert.append((block, ts))
+            with self._lock, self._conn() as conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO block_ts(block, timestamp) VALUES (?, ?)",
+                    rows_to_insert,
+                )
+        return {block: cached[block] for block in unique}
 
     def block_at_timestamp(self, target_ts: int) -> int:
         """Largest block number with ``timestamp <= target_ts``."""
