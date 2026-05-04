@@ -529,6 +529,51 @@ class RpcClient:
                 next_url = rotator.mark_rate_limited(url)
                 url = self._handle_exhausted(rotator, tried_urls, next_url, exc)
 
+    def _rpc_batch(self, method: str, params_list: list[list[Any]]) -> list[Any]:
+        """Execute a JSON-RPC batch on the standard endpoint pool."""
+        if not params_list:
+            return []
+
+        payload = [
+            {"jsonrpc": "2.0", "id": idx, "method": method, "params": params}
+            for idx, params in enumerate(params_list)
+        ]
+        rotator = self._rotator
+        tried_urls: set[str] = set()
+        url = rotator.current()
+        rate_limit_attempts = 0
+
+        while True:
+            try:
+                data = self._post_one(url, self._session, payload)
+                if not isinstance(data, list):
+                    raise RpcTransientError(f"malformed JSON-RPC batch from {_url_label(url)}")
+                by_id = {item.get("id"): item for item in data if isinstance(item, dict)}
+                if len(by_id) != len(payload):
+                    raise RpcTransientError(f"incomplete JSON-RPC batch from {_url_label(url)}")
+                result = [self._parse_rpc_result(by_id[idx], url) for idx in range(len(payload))]
+                rotator.mark_success(url)
+                return result
+            except RateLimitError as exc:
+                rate_limit_attempts += 1
+                log.warning(
+                    "rate-limited on %s batch (%s); fixed cooldown attempt %d/%d",
+                    _url_label(url),
+                    exc,
+                    rate_limit_attempts,
+                    self._cfg.rate_limit_retries,
+                )
+                if rate_limit_attempts >= self._cfg.rate_limit_retries:
+                    raise
+                tried_urls.add(url)
+                next_url = rotator.mark_rate_limited(url)
+                url = self._handle_exhausted(rotator, tried_urls, next_url, exc)
+            except RpcTransientError as exc:
+                log.warning("transient batch error on %s after retries — cycling", _url_label(url))
+                tried_urls.add(url)
+                next_url = rotator.mark_rate_limited(url)
+                url = self._handle_exhausted(rotator, tried_urls, next_url, exc)
+
     def _handle_exhausted(
         self, rotator: _UrlRotator, tried_urls: set[str], next_url: str, exc: Exception
     ) -> str:
@@ -578,6 +623,43 @@ class RpcClient:
         if key is not None and result is not None:
             self._cache.put(key, json.dumps(result).encode())
         return result
+
+    def get_blocks(
+        self,
+        numbers: Iterable[int],
+        *,
+        full_transactions: bool = False,
+        batch_size: int = 100,
+    ) -> dict[int, dict]:
+        """Fetch many blocks, using the cache and JSON-RPC batch requests."""
+        unique = sorted(set(numbers))
+        out: dict[int, dict] = {}
+        missing: list[int] = []
+        for number in unique:
+            block_ref = _block_to_rpc(number)
+            key = self._cache_key("eth_getBlockByNumber", block_ref, "", full_transactions)
+            hit = self._cache.get(key)
+            if hit is None:
+                missing.append(number)
+            else:
+                out[number] = json.loads(hit)
+
+        for start in range(0, len(missing), batch_size):
+            batch = missing[start : start + batch_size]
+            params = [[_block_to_rpc(number), full_transactions] for number in batch]
+            results = self._rpc_batch("eth_getBlockByNumber", params)
+            for number, result in zip(batch, results, strict=True):
+                if result is None:
+                    raise RpcTransientError(f"missing block {number}")
+                out[number] = result
+                key = self._cache_key(
+                    "eth_getBlockByNumber",
+                    _block_to_rpc(number),
+                    "",
+                    full_transactions,
+                )
+                self._cache.put(key, json.dumps(result).encode())
+        return out
 
     def call(self, to: str, data: bytes, block: int | str = "latest") -> bytes:
         block_ref = _block_to_rpc(block)
@@ -749,12 +831,16 @@ def fetch_logs_chunked(
         except TooManyResultsError:
             if chunk <= min_chunk:
                 raise
-            if chunk > 10:
-                chunk = 10
-            else:
-                chunk = max(min_chunk, chunk // 2)
+            old_chunk = chunk
+            chunk = max(min_chunk, chunk // 2)
             ceiling = chunk
-            log.info("shrinking log chunk to %d blocks and retrying", chunk)
+            log.info(
+                "provider returned too many logs for %d..%d; chunk %d -> %d and retrying",
+                cursor,
+                window_end,
+                old_chunk,
+                chunk,
+            )
             continue
         except RpcTransientError as exc:
             log.warning(

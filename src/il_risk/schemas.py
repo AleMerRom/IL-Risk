@@ -145,14 +145,19 @@ def compact_files(parts: list[Path], output_file: Path, schema: pa.Schema) -> in
     if not parts:
         return 0
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    tables = [pq.read_table(p, schema=schema) for p in parts]
-    merged = pa.concat_tables(tables)
-    if "log_index" in merged.column_names:
-        log_index = merged.column("log_index")
-        if int(pc.min(log_index).as_py()) < 0:
-            raise ValueError("cannot compact event parts with negative log_index values")
-    pq.write_table(merged, output_file, compression="zstd")
-    return merged.num_rows
+    total_rows = 0
+    with pq.ParquetWriter(output_file, schema=schema, compression="zstd") as writer:
+        for part in parts:
+            table = pq.read_table(part, schema=schema)
+            if "log_index" in table.column_names and table.num_rows:
+                log_index = table.column("log_index")
+                if int(pc.min(log_index).as_py()) < 0:
+                    raise ValueError(
+                        f"cannot compact event part with negative log_index values: {part}"
+                    )
+            writer.write_table(table)
+            total_rows += table.num_rows
+    return total_rows
 
 
 def _coerce_rows(rows: list[dict], schema: pa.Schema) -> list[dict]:

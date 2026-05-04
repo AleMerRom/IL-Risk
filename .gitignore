@@ -2,6 +2,7 @@
 data/**/*.parquet
 data/archive/
 data/checkpoints/
+data/processed/exports
 data/raw/*/
 data/**/*.sqlite
 data/**/*.sqlite-shm

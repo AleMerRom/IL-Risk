@@ -108,11 +108,8 @@ def extract_swaps(
         if not logs:
             return
         # Resolve timestamps once per unique block.
-        ts_by_block: dict[int, int] = {}
-        for lg in logs:
-            block_num = int(lg["blockNumber"], 16)
-            if block_num not in ts_by_block:
-                ts_by_block[block_num] = block_index._ts_of(block_num)  # noqa: SLF001
+        blocks = {int(lg["blockNumber"], 16) for lg in logs}
+        ts_by_block = block_index.ts_many(blocks)
         rows = [_transform(lg, ts_by_block[int(lg["blockNumber"], 16)]) for lg in logs]
         if workers > 1:
             write_rows(parts_dir / f"part-{lo}-{hi}.parquet", rows, swap_events_schema())
@@ -133,7 +130,14 @@ def extract_swaps(
             chunk_blocks=chunk_blocks,
         )
     return fetch_logs_chunked(
-        rpc, POOL_ADDRESS, [SWAP_TOPIC0], from_block, to_block, on_batch, checkpoint_path=checkpoint
+        rpc,
+        POOL_ADDRESS,
+        [SWAP_TOPIC0],
+        from_block,
+        to_block,
+        on_batch,
+        checkpoint_path=checkpoint,
+        initial_chunk=chunk_blocks,
     )
 
 
