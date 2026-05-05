@@ -37,8 +37,8 @@ Place all produced datasets in `data/processed/`:
 - `hedge_results.parquet` (Module 5)
 
 ## Repo structure
-The current codebase contains only native `il_risk` Module 1 extraction code. Paul’s older `fabdl`
-package layout is not used.
+This repository is structured so that `src/il_risk/` is a reusable Python package (RPC infra, Uniswap
+V3 domain logic, and per-module pipelines), while `scripts/` contains thin runnable entrypoints.
 
 ```
 .
@@ -49,9 +49,23 @@ package layout is not used.
 ├── notebooks/               # optional exploratory notebooks
 ├── reports/                 # final write-up (PDF/LaTeX/Markdown, your choice)
 ├── scripts/                 # CLI entrypoints
-├── src/il_risk/             # Module 1 package code
+├── src/il_risk/             # package code
+│   ├── constants.py
+│   ├── schemas.py
+│   ├── cli.py               # Typer CLI wiring for Module 1 workflows/validation
+│   ├── rpc/                 # Ethereum RPC client + block index/cache
+│   ├── uniswap_v3/          # Uniswap V3 events + math + swap simulator
+│   └── pipelines/           # per-module data workflows (read/write Parquet)
+│       ├── module1/
+│       └── module3/
 └── tests/                   # schema checks / validations
 ```
+
+Guiding rule:
+- `src/il_risk/uniswap_v3/`: domain logic (math, decoding, simulator)
+- `src/il_risk/rpc/`: RPC/networking + chain access helpers
+- `src/il_risk/pipelines/module*/`: “module workflows” that produce Parquet outputs
+- `scripts/`: entrypoints only (arg parsing + calling pipelines)
 
 ## Module 1 extraction
 
@@ -73,6 +87,7 @@ PYTHONPATH=src python scripts/data_extraction.py extract collects
 PYTHONPATH=src python scripts/data_extraction.py extract swaps
 PYTHONPATH=src python scripts/data_extraction.py extract slot0
 PYTHONPATH=src python scripts/data_extraction.py extract liquidity-snapshots
+PYTHONPATH=src python scripts/data_extraction.py extract swap-mid-prices
 PYTHONPATH=src python scripts/data_extraction.py validate
 ```
 
@@ -80,6 +95,16 @@ Paul’s normalized draft files are archived under:
 
 ```text
 data/archive/paul_end_of_day_2025-10-2026-03/
+```
+
+## Module 3 simulation (slippage grid)
+The simulator lives in `src/il_risk/uniswap_v3/swap_simulator.py` and the Module 3 workflow lives in
+`src/il_risk/pipelines/module3/slippage_analysis.py`.
+
+To generate `simulated_trades.parquet` from the Module 1 snapshot Parquets:
+
+```bash
+PYTHONPATH=src python -c "from il_risk.pipelines.module3.slippage_analysis import run_simulation_grid; run_simulation_grid()"
 ```
 
 ## Data dictionary
