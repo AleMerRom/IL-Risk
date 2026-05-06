@@ -26,7 +26,7 @@ previous-block pool state, the natural lookup unit is the unique swap block, not
 the individual swap.  The full file contains 637,982 unique swap blocks.  To
 make the archive-node extraction tractable, we use a documented stratified
 sample of 25,000 unique swap blocks for the empirical comparison.  The sampling
-metadata is saved in \path{data/processed/swap_mid_prices.metadata.json}.
+metadata is saved in \path{data/results/module_3/swap_mid_prices.metadata.json}.
 
 The subset was chosen at the block level and stratified by date, trade
 direction, and USD notional bucket.  This preserves the three dimensions that
@@ -212,7 +212,7 @@ Figure~\ref{fig:fig32-price-impact} shows these curves on log-log axes.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=0.95\linewidth]{../figs/module3_price_impact_curves.png}
+    \includegraphics[width=0.95\linewidth]{../data/results/module_3/figures/module3_price_impact_curves.png}
     \caption{Fig 3.2 --- Simulated price impact by trade size. Solid lines show the median across daily snapshots; shaded areas show the 10th--90th percentile range.}
     \label{fig:fig32-price-impact}
 \end{figure}
@@ -280,7 +280,7 @@ contain many swaps but only one previous-block mid price.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=0.95\linewidth]{../figs/module3_effective_spread_by_size.png}
+    \includegraphics[width=0.95\linewidth]{../data/results/module_3/figures/module3_effective_spread_by_size.png}
     \caption{Fig 3.3 --- Median observed effective spread by trade-size bucket compared with the simulated median price impact.}
     \label{fig:fig33-effective-spread}
 \end{figure}
