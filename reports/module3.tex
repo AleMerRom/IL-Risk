@@ -1,0 +1,212 @@
+% Included by reports/main.tex (no preamble in module files).
+\section{Module 3 --- Slippage Simulation and Execution Cost}
+\label{sec:module3}
+
+\subsection{Objective and Scope}
+\label{subsec:m3-objective}
+% TODO: Briefly explain why execution cost matters in concentrated-liquidity AMMs.
+% TODO: State that this module links liquidity distribution (Module 2) to taker execution quality.
+% TODO: Mention study window used in all simulations.
+
+\paragraph{Pool configuration used in this module.}
+\begin{itemize}
+    \item Protocol: Uniswap V3
+    \item Pair: USDC/WETH
+    \item Fee tier: 0.05\% (5 bps)
+    \item Contract: \texttt{0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640}
+\end{itemize}
+
+\subsection{Data Inputs and Preprocessing}
+\label{subsec:m3-data}
+% TODO: List all input datasets and where they come from.
+% Required at minimum:
+% - liquidity_snapshots.parquet
+% - slot0_snapshots.parquet
+% - swap_events.parquet
+% Optional: any helper tables generated in Module 2.
+
+\paragraph{Inputs used.}
+\begin{itemize}
+    \item \texttt{liquidity\_snapshots.parquet}: tick-level liquidity map per daily snapshot.
+    \item \texttt{slot0\_snapshots.parquet}: pool mid-price and current tick per snapshot.
+    \item \texttt{swap\_events.parquet}: observed swaps for simulator validation and effective spread estimation.
+\end{itemize}
+
+\paragraph{Preprocessing notes.}
+% TODO: Describe conversions and assumptions:
+% - token decimals
+% - price convention (USDC per WETH)
+% - trade direction mapping (buy/sell WETH)
+% - timestamp/block alignment rules
+
+\subsection{Task 3.1 --- Uniswap V3 Swap Simulator}
+\label{subsec:m3-task31}
+
+\subsubsection{Algorithm design}
+\label{subsubsec:m3-algo}
+% TODO: Describe the step-by-step V3 swap traversal by tick interval:
+% 1) identify next initialized tick in trade direction
+% 2) compute max input to reach tick boundary at constant active liquidity
+% 3) either fill within interval or cross boundary
+% 4) update active liquidity with liquidityNet when crossing
+% 5) repeat until requested notional is fully executed
+
+\subsubsection{Mathematical formulation}
+\label{subsubsec:m3-formulas}
+% TODO: State and derive the exact formulas used (from Uniswap V3 whitepaper),
+% including:
+% - price movement within interval
+% - input/output token relations
+% - boundary crossing conditions
+% - active liquidity updates
+% - conversion between sqrtPriceX96, tick, and human price
+% Keep notation consistent with code.
+
+\paragraph{Fee treatment.}
+The pool fee is 0.05\%. In each simulation step, fee is deducted from input before computing output.
+% TODO: Add one explicit equation showing gross input, net input, and fee.
+
+\subsubsection{Implementation details}
+\label{subsubsec:m3-impl}
+% TODO: Briefly describe code architecture for D3.1:
+% - key functions/classes in swap_simulator.py
+% - inputs/outputs of simulator function
+% - numerical precision choices and edge-case handling
+
+\subsubsection{Validation against observed swaps (D3.4)}
+\label{subsubsec:m3-validation}
+% TODO: Explain validation protocol:
+% - how sample swaps are selected from swap_events.parquet
+% - which fields are compared (simulated vs observed output/price)
+% - error metrics (absolute %, bps error)
+% - acceptance criteria and interpretation
+
+\begin{table}[t]
+    \centering
+    \caption{Fig 3.1 --- Simulator validation: simulated vs. observed swaps.}
+    \label{tab:fig31-validation}
+    \begin{tabular}{lrrrrr}
+        \hline
+        Swap ID & Direction & Notional (USD) & Observed price & Simulated price & Error (\%) \\
+        \hline
+        % TODO: Fill rows
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Task 3.2 --- Simulation Grid and Output Dataset}
+\label{subsec:m3-task32}
+
+\subsubsection{Grid definition}
+\label{subsubsec:m3-grid}
+Simulations are run for:
+\begin{itemize}
+    \item Trade sizes (USD notional): \$1K, \$10K, \$50K, \$100K, \$250K, \$500K, \$1M
+    \item Directions: buy WETH (USDC in), sell WETH (WETH in)
+    \item Snapshots: all daily snapshots in the study window
+\end{itemize}
+
+\subsubsection{Recorded outputs (\texttt{simulated\_trades.parquet}, D3.3)}
+\label{subsubsec:m3-outputs}
+% TODO: Confirm and document all saved columns:
+% snapshot_block, snapshot_timestamp, direction, notional_usd,
+% avg_executed_price, mid_price, price_impact_bps, slippage_bps,
+% tick_boundaries_crossed, plus any diagnostic columns.
+
+\paragraph{Definition of reported metrics.}
+% TODO: Add explicit equations for:
+% - average executed price
+% - price impact (bps)
+% - slippage (bps) net of 5 bps fee
+% Make sign conventions explicit for buy vs sell.
+
+\subsection{Task 3.3 --- Price Impact Curve Analysis (D3.5)}
+\label{subsec:m3-task33}
+% TODO: Describe plotting methodology:
+% - x-axis: trade size (log scale)
+% - y-axis: price impact (bps, log scale if used)
+% - separate buy/sell curves
+% - median curve across snapshots
+% - 10th and 90th percentile bands
+
+\begin{figure}[t]
+    \centering
+    % TODO: Replace with actual figure include command.
+    % \includegraphics[width=\linewidth]{figures/module3/fig3_2_price_impact_curves.pdf}
+    \fbox{\parbox[c][5cm][c]{0.95\linewidth}{\centering Placeholder for Fig 3.2}}
+    \caption{Fig 3.2 --- Price impact curves by trade size, with median and 10th/90th percentile bands.}
+    \label{fig:fig32-price-impact}
+\end{figure}
+
+\paragraph{Interpretation prompts.}
+\begin{itemize}
+    \item % TODO: Is impact convex in trade size? Is there a regime shift at larger notionals?
+    \item % TODO: Are buy and sell impacts symmetric? If not, relate to liquidity asymmetry around current price.
+    \item % TODO: How does dispersion across days (10th--90th band) vary with size?
+\end{itemize}
+
+\subsection{Task 3.4 --- Effective Spread from Observed Swaps (D3.6)}
+\label{subsec:m3-task34}
+
+\subsubsection{Empirical estimator}
+\label{subsubsec:m3-es-formula}
+For each observed swap $i$, effective spread is:
+\[
+ES_i = 2 D_i \frac{p^{\text{exec}}_i - p^{\text{mid}}_i}{p^{\text{mid}}_i},
+\]
+where $D_i=+1$ for buy and $D_i=-1$ for sell.
+
+% TODO: Clarify precisely how:
+% - p_exec is computed from amount0/amount1
+% - p_mid is obtained from slot0 at block immediately before the swap
+% - swaps are filtered and cleaned
+
+\subsubsection{Binning and comparison}
+\label{subsubsec:m3-binning}
+Observed swaps are binned into the same seven notional buckets as the simulation grid.
+% TODO: Report median effective spread per bin and compare to simulated impacts.
+
+\begin{figure}[t]
+    \centering
+    % TODO: Replace with actual figure include command.
+    % \includegraphics[width=\linewidth]{figures/module3/fig3_3_effective_spread_comparison.pdf}
+    \fbox{\parbox[c][5cm][c]{0.95\linewidth}{\centering Placeholder for Fig 3.3}}
+    \caption{Fig 3.3 --- Effective spread by trade size: simulation vs empirical observed swaps.}
+    \label{fig:fig33-effective-spread}
+\end{figure}
+
+\paragraph{Interpretation prompts.}
+\begin{itemize}
+    \item % TODO: Do empirical spreads align with simulator outputs by size bin?
+    \item % TODO: Which bins show largest discrepancies and why (timing mismatch, MEV, volatility bursts, etc.)?
+    \item % TODO: What does this imply about realism and limitations of the simulator assumptions?
+\end{itemize}
+
+\subsection{Robustness Checks and Limitations}
+\label{subsec:m3-limitations}
+% TODO: Add brief robustness tests, e.g.:
+% - sensitivity to snapshot timing (00:00 UTC block selection)
+% - alternative validation subsets
+% - precision/rounding sensitivity
+% - missing frictions (gas, latency, MEV, multi-hop routing)
+
+\subsection{Module 3 Deliverables Checklist}
+\label{subsec:m3-checklist}
+\begin{itemize}
+    \item[\(\square\)] \textbf{D3.1} \texttt{swap\_simulator.py}: standalone, documented Uniswap V3 swap simulator.
+    \item[\(\square\)] \textbf{D3.2} \texttt{slippage\_analysis.py}: full simulation grid + all Module 3 figures/tables.
+    \item[\(\square\)] \textbf{D3.3} \texttt{simulated\_trades.parquet}: complete simulation output.
+    \item[\(\square\)] \textbf{D3.4} Fig 3.1 validation table (simulated vs actual, error metrics).
+    \item[\(\square\)] \textbf{D3.5} Fig 3.2 price impact curves with median and percentile bands.
+    \item[\(\square\)] \textbf{D3.6} Fig 3.3 effective spread comparison (simulated vs observed).
+\end{itemize}
+
+\subsection{Writing TODOs Before Submission}
+\label{subsec:m3-todos}
+\begin{itemize}
+    \item[\(\square\)] Ensure all figures are self-contained (axis labels, units, legends).
+    \item[\(\square\)] Ensure every equation variable is defined once, with consistent notation.
+    \item[\(\square\)] Cross-reference code artifacts and data files by exact filename.
+    \item[\(\square\)] Add 1--2 paragraph takeaway connecting liquidity shape to execution cost.
+    \item[\(\square\)] Proofread sign conventions (buy/sell, price impact, slippage, effective spread).
+\end{itemize}
