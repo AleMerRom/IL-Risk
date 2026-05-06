@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from il_risk.schemas import _coerce_rows, mint_burn_events_schema
+from shared.schemas import _coerce_rows, mint_burn_events_schema
 
 
 def _mint_row(**overrides):

@@ -4,13 +4,13 @@ from decimal import Decimal
 
 import pandas as pd
 
-from il_risk.uniswap_v3.swap_simulator import (
+from module3.swap_simulator import (
     LiquidityTick,
     Slot0Snapshot,
     simulate_swap,
     simulate_swap_from_parquet,
 )
-from il_risk.uniswap_v3.math import get_sqrt_ratio_at_tick
+from shared.uniswap_math import get_sqrt_ratio_at_tick
 
 
 CURRENT_TICK = 200_005

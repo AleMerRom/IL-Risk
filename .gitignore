@@ -1,5 +1,6 @@
 ## Data outputs (parquet)
 data/**/*.parquet
+data/_archive/
 data/archive/
 data/checkpoints/
 data/processed/exports

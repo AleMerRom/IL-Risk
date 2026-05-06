@@ -6,8 +6,8 @@ from decimal import Decimal
 import pandas as pd
 from eth_abi import encode as abi_encode
 
-from il_risk.pipelines.module1.compact import extract_swap_mid_prices
-from il_risk.uniswap_v3.math import get_sqrt_ratio_at_tick
+from module1.extract_swap_mid_prices import extract_swap_mid_prices
+from shared.uniswap_math import get_sqrt_ratio_at_tick
 
 
 class FakeRpc:
