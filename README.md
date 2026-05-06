@@ -50,7 +50,6 @@ be easy to inspect for grading, not packaged as a reusable library.
 │   ├── processed/           # canonical Module 1 source parquet files
 │   ├── results/             # generated module deliverables and figures
 │   └── _archive/            # local backups, raw parts, caches, old exports
-├── scripts/                 # optional convenience wrappers
 ├── src/
 │   ├── module1/             # data_extraction.py and extraction helpers
 │   ├── module2/             # liquidity_analysis.py

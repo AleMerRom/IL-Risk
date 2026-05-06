@@ -280,7 +280,7 @@ def extract_liquidity_snapshots_daily(
             mint_burn_parquet = out_dir / "processed" / "mint_burn_events.parquet"
         if not mint_burn_parquet.exists():
             raise FileNotFoundError(
-                f"Path B requires {mint_burn_parquet} — run `python scripts/data_extraction.py extract mints-burns` first"
+                f"Path B requires {mint_burn_parquet} — run `python src/module1/data_extraction.py extract mints-burns` first"
             )
 
     block_index = None
