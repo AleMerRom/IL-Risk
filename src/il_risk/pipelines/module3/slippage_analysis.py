@@ -208,6 +208,7 @@ def compute_effective_spreads(
     output_path: Path | str | None = None,
     trade_size_buckets_usd: Iterable[float | int | Decimal] = DEFAULT_TRADE_SIZES_USD,
     write_output: bool = True,
+    allow_mid_price_subset: bool = False,
 ) -> pd.DataFrame:
     """Compute Task 3.4 effective spreads for observed swaps.
 
@@ -235,14 +236,24 @@ def compute_effective_spreads(
         if pre_swap_mid_prices is not None
         else pd.read_parquet(pre_swap_mid_prices_path)
     )
+    swaps_df = swaps_df[
+        (swaps_df["amount0_usdc"].astype(float).abs() > 0)
+        & (swaps_df["amount1_weth"].astype(float).abs() > 0)
+    ].copy()
     _validate_swaps_for_effective_spread(swaps_df)
     mids_df = _normalize_pre_swap_mid_prices(mids_df)
 
     merged = swaps_df.merge(mids_df, on="block_number", how="left", validate="many_to_one")
     missing_mid = merged["mid_price_usdc_per_weth"].isna()
     if missing_mid.any():
+        if allow_mid_price_subset:
+            merged = merged.loc[~missing_mid].copy()
+        else:
+            missing_blocks = sorted(merged.loc[missing_mid, "block_number"].unique().tolist())
+            raise ValueError(f"missing pre-swap mid prices for blocks: {missing_blocks[:10]}")
+    if merged.empty:
         missing_blocks = sorted(merged.loc[missing_mid, "block_number"].unique().tolist())
-        raise ValueError(f"missing pre-swap mid prices for blocks: {missing_blocks[:10]}")
+        raise ValueError(f"no swaps remain after matching pre-swap mid prices: {missing_blocks[:10]}")
 
     out = merged.copy()
     out["execution_price_usdc_per_weth"] = (

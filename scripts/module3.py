@@ -87,7 +87,11 @@ def _run_simulation_artifacts(paths: dict[str, Path]) -> None:
     typer.echo(f"wrote price impact figure: {plot_path}")
 
 
-def _run_effective_spread_artifacts(paths: dict[str, Path]) -> None:
+def _run_effective_spread_artifacts(
+    paths: dict[str, Path],
+    *,
+    allow_mid_price_subset: bool = False,
+) -> None:
     _require(paths["swaps"], "swap events")
     _require(paths["swap_mid_prices"], "pre-swap mid prices")
     _require(paths["price_impact_summary"], "price impact summary")
@@ -96,6 +100,7 @@ def _run_effective_spread_artifacts(paths: dict[str, Path]) -> None:
         swaps_path=paths["swaps"],
         pre_swap_mid_prices_path=paths["swap_mid_prices"],
         output_path=paths["effective_spreads"],
+        allow_mid_price_subset=allow_mid_price_subset,
     )
     typer.echo(f"wrote effective spreads: {paths['effective_spreads']} ({len(spreads)} rows)")
 
@@ -151,10 +156,14 @@ def simulate(
 def effective_spreads(
     processed_dir: Path = typer.Option(DEFAULT_PROCESSED_DIR, "--processed-dir"),
     figs_dir: Path = typer.Option(DEFAULT_FIGS_DIR, "--figs-dir"),
+    allow_mid_price_subset: bool = typer.Option(False, "--allow-mid-price-subset"),
 ) -> None:
     """Generate Task 3.4 effective-spread tables and comparison figure."""
 
-    _run_effective_spread_artifacts(_paths(processed_dir, figs_dir))
+    _run_effective_spread_artifacts(
+        _paths(processed_dir, figs_dir),
+        allow_mid_price_subset=allow_mid_price_subset,
+    )
 
 
 @app.command("run-all")
@@ -162,6 +171,7 @@ def run_all(
     processed_dir: Path = typer.Option(DEFAULT_PROCESSED_DIR, "--processed-dir"),
     figs_dir: Path = typer.Option(DEFAULT_FIGS_DIR, "--figs-dir"),
     skip_effective_spreads: bool = typer.Option(False, "--skip-effective-spreads"),
+    allow_mid_price_subset: bool = typer.Option(False, "--allow-mid-price-subset"),
 ) -> None:
     """Generate all Module 3 tables and figures from existing parquet inputs."""
 
@@ -170,7 +180,7 @@ def run_all(
     if skip_effective_spreads:
         typer.echo("skipped Task 3.4 effective-spread artifacts")
         return
-    _run_effective_spread_artifacts(paths)
+    _run_effective_spread_artifacts(paths, allow_mid_price_subset=allow_mid_price_subset)
 
 
 if __name__ == "__main__":

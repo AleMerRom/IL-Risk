@@ -1,0 +1,29 @@
+{
+  "batch_size": 100,
+  "from_block": null,
+  "include_timestamps": false,
+  "justification": "Task 3.4 accepts a subset. Blocks are sampled rather than individual swaps because all swaps in a block share the same previous-block mid price. Stratifying by day, direction, and notional bucket preserves time variation, side, and trade-size composition for the effective-spread comparison.",
+  "method": "stratified_block_sample",
+  "sample_blocks_requested": 25000,
+  "sample_seed": 413,
+  "sampling_unit": "swap block",
+  "selected_unique_swap_blocks": 25000,
+  "strata": [
+    "date",
+    "trade_direction",
+    "usd_notional_bucket"
+  ],
+  "to_block": null,
+  "total_unique_swap_blocks": 637982,
+  "usd_notional_bucket_edges": [
+    0,
+    1000,
+    10000,
+    50000,
+    100000,
+    250000,
+    500000,
+    1000000,
+    "Infinity"
+  ]
+}
