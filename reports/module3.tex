@@ -2,211 +2,331 @@
 \section{Module 3 --- Slippage Simulation and Execution Cost}
 \label{sec:module3}
 
-\subsection{Objective and Scope}
-\label{subsec:m3-objective}
-% TODO: Briefly explain why execution cost matters in concentrated-liquidity AMMs.
-% TODO: State that this module links liquidity distribution (Module 2) to taker execution quality.
-% TODO: Mention study window used in all simulations.
+Execution quality in a concentrated-liquidity AMM is shaped by where liquidity
+sits around the current price.  A deep pool can still be expensive to trade
+against if its liquidity is away from the active range, while a smaller pool can
+offer tight execution if capital is concentrated near the marginal price.  This
+module turns the reconstructed Uniswap V3 state from Module 1 into a taker-side
+execution model for the USDC/WETH 0.05\% pool.  The study window runs from
+1 October 2025 to 31 March 2026.
 
-\paragraph{Pool configuration used in this module.}
-\begin{itemize}
-    \item Protocol: Uniswap V3
-    \item Pair: USDC/WETH
-    \item Fee tier: 0.05\% (5 bps)
-    \item Contract: \texttt{0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640}
-\end{itemize}
-
-\subsection{Data Inputs and Preprocessing}
+\subsection{Data Inputs}
 \label{subsec:m3-data}
-% TODO: List all input datasets and where they come from.
-% Required at minimum:
-% - liquidity_snapshots.parquet
-% - slot0_snapshots.parquet
-% - swap_events.parquet
-% Optional: any helper tables generated in Module 2.
 
-\paragraph{Inputs used.}
-\begin{itemize}
-    \item \texttt{liquidity\_snapshots.parquet}: tick-level liquidity map per daily snapshot.
-    \item \texttt{slot0\_snapshots.parquet}: pool mid-price and current tick per snapshot.
-    \item \texttt{swap\_events.parquet}: observed swaps for simulator validation and effective spread estimation.
-\end{itemize}
+The simulator uses two state files from Module 1.  The liquidity snapshot file
+provides the initialized ticks, \path{liquidityNet}, and active liquidity at
+each daily snapshot.  The slot0 snapshot file provides the matching
+\path{sqrtPriceX96}, current tick, and human-readable mid price.  There are 182
+daily snapshots in the sample.
 
-\paragraph{Preprocessing notes.}
-% TODO: Describe conversions and assumptions:
-% - token decimals
-% - price convention (USDC per WETH)
-% - trade direction mapping (buy/sell WETH)
-% - timestamp/block alignment rules
+For the observed-swap comparison we use \path{swap_events.parquet}, which
+contains 1,095,286 swaps.  Effective spreads require the pool mid price just
+before the swap.  Since all swaps in a given block share the same
+previous-block pool state, the natural lookup unit is the unique swap block, not
+the individual swap.  The full file contains 637,982 unique swap blocks.  To
+make the archive-node extraction tractable, we use a documented stratified
+sample of 25,000 unique swap blocks for the empirical comparison.  The sampling
+metadata is saved in \path{data/processed/swap_mid_prices.metadata.json}.
+
+The subset was chosen at the block level and stratified by date, trade
+direction, and USD notional bucket.  This preserves the three dimensions that
+matter most for the comparison: time variation in liquidity, buy-sell
+asymmetry, and trade-size composition.  It is also aligned with the estimator:
+because $p^{mid}$ is defined at the previous block, including more swaps from
+the same block would add event observations but not new mid-price information.
+The resulting sample is therefore appropriate for comparing median effective
+spreads by size bucket, while avoiding a much larger archive RPC job.
+
+All prices are reported as USDC per WETH.  Internally, token0 is USDC with six
+decimals and token1 is WETH with eighteen decimals.  A \path{buy_weth} trade
+means USDC enters the pool and WETH leaves the pool; a \path{sell_weth} trade
+means WETH enters and USDC leaves.
 
 \subsection{Task 3.1 --- Uniswap V3 Swap Simulator}
 \label{subsec:m3-task31}
 
-\subsubsection{Algorithm design}
+\subsubsection{Algorithm}
 \label{subsubsec:m3-algo}
-% TODO: Describe the step-by-step V3 swap traversal by tick interval:
-% 1) identify next initialized tick in trade direction
-% 2) compute max input to reach tick boundary at constant active liquidity
-% 3) either fill within interval or cross boundary
-% 4) update active liquidity with liquidityNet when crossing
-% 5) repeat until requested notional is fully executed
 
-\subsubsection{Mathematical formulation}
+The simulator follows the native Uniswap V3 execution logic.  A swap is broken
+into local steps, each inside a tick interval where active liquidity is
+constant.  The implementation lives in
+\path{src/il_risk/uniswap_v3/swap_simulator.py}.  The core function,
+\path{simulate_swap}, is deliberately in-memory: it receives one reconstructed
+liquidity map, the matching slot0 state, a direction, a USD notional, and the
+fee.  Parquet loading is handled only by a thin convenience wrapper, so the
+swap logic can be tested without depending on file I/O.
+
+For each trade, the simulator initializes the state from the current
+\path{sqrtPriceX96}, current tick, active liquidity, and sorted initialized
+ticks.  It then repeats the following loop until the requested input notional
+has been consumed:
+\begin{enumerate}
+    \item find the next initialized tick in the trade direction;
+    \item compute the net input needed to move exactly to that tick boundary;
+    \item deduct the 0.05\% pool fee from gross input before computing output;
+    \item either finish the trade inside the interval or cross the boundary;
+    \item if a boundary is crossed, update active liquidity using
+    \path{liquidityNet}.
+\end{enumerate}
+
+The active-liquidity update follows the Uniswap V3 tick convention.  When WETH
+is sold into the pool, the internal square-root price moves upward and the
+liquidity update is $L \leftarrow L + \mathrm{liquidityNet}$.  When WETH is
+bought from the pool, the internal square-root price moves downward and the
+update is $L \leftarrow L - \mathrm{liquidityNet}$.  This sign convention can
+look counterintuitive in USDC/WETH terms, because the Uniswap raw price is in
+token1/token0 units and our plotted price is the decimal-adjusted reciprocal.
+
+\subsubsection{Formulas}
 \label{subsubsec:m3-formulas}
-% TODO: State and derive the exact formulas used (from Uniswap V3 whitepaper),
-% including:
-% - price movement within interval
-% - input/output token relations
-% - boundary crossing conditions
-% - active liquidity updates
-% - conversion between sqrtPriceX96, tick, and human price
-% Keep notation consistent with code.
 
-\paragraph{Fee treatment.}
-The pool fee is 0.05\%. In each simulation step, fee is deducted from input before computing output.
-% TODO: Add one explicit equation showing gross input, net input, and fee.
+Let $s=\sqrt{P}$ denote the raw Uniswap square-root price and let $L$ denote
+active liquidity in the current interval.  The within-interval token amounts
+come from the standard Uniswap V3 virtual reserve formulas\footnote{Uniswap V3
+whitepaper, \url{https://uniswap.org/whitepaper-v3.pdf}.}:
+\[
+    \Delta x = L\left(\frac{1}{s_a} - \frac{1}{s_b}\right),
+    \qquad
+    \Delta y = L(s_b - s_a),
+\]
+where $x$ is token0 (USDC), $y$ is token1 (WETH), and $s_a<s_b$ are the
+square-root prices spanning the step.
 
-\subsubsection{Implementation details}
-\label{subsubsec:m3-impl}
-% TODO: Briefly describe code architecture for D3.1:
-% - key functions/classes in swap_simulator.py
-% - inputs/outputs of simulator function
-% - numerical precision choices and edge-case handling
+For a buy of WETH, token0 is the input and the internal square-root price falls
+from $s$ to $s'$:
+\[
+    \Delta x_{\mathrm{net}}
+    = L\left(\frac{1}{s'}-\frac{1}{s}\right),
+    \qquad
+    \Delta y_{\mathrm{out}} = L(s-s'),
+    \qquad
+    \frac{1}{s'} = \frac{1}{s} + \frac{\Delta x_{\mathrm{net}}}{L}.
+\]
+For a sale of WETH, token1 is the input and the internal square-root price
+rises:
+\[
+    \Delta y_{\mathrm{net}} = L(s'-s),
+    \qquad
+    \Delta x_{\mathrm{out}}
+    = L\left(\frac{1}{s}-\frac{1}{s'}\right),
+    \qquad
+    s' = s + \frac{\Delta y_{\mathrm{net}}}{L}.
+\]
 
-\subsubsection{Validation against observed swaps (D3.4)}
+The fee is charged on input at every step:
+\[
+    \Delta q_{\mathrm{net}} = (1-f)\Delta q_{\mathrm{gross}},
+    \qquad f = 0.0005.
+\]
+Average execution prices include this fee.  We report price impact including
+fees and slippage net of the 5 bps fee:
+\[
+    \mathrm{slippage}_{bps}
+    =
+    \mathrm{price\ impact}_{bps}-5.
+\]
+
+For buys, $p^{exec}=\mathrm{USDC}_{in}/\mathrm{WETH}_{out}$ and
+\[
+    \mathrm{impact}_{bps}
+    =
+    \left(\frac{p^{exec}}{p^{mid}}-1\right)10{,}000.
+\]
+For sells, $p^{exec}=\mathrm{USDC}_{out}/\mathrm{WETH}_{in}$ and
+\[
+    \mathrm{impact}_{bps}
+    =
+    \left(1-\frac{p^{exec}}{p^{mid}}\right)10{,}000.
+\]
+This gives positive execution costs for both directions.
+
+\subsubsection{Validation Against Observed Swaps}
 \label{subsubsec:m3-validation}
-% TODO: Explain validation protocol:
-% - how sample swaps are selected from swap_events.parquet
-% - which fields are compared (simulated vs observed output/price)
-% - error metrics (absolute %, bps error)
-% - acceptance criteria and interpretation
+
+To validate the simulator against real pool behavior, we use observed swaps
+that occur exactly one block after a daily snapshot block.  For these swaps,
+the reconstructed daily snapshot is the pre-swap state, so the simulator can be
+run with the actual observed input and compared directly with the event output.
+This gives 112 validation swaps across 81 distinct days.  The median absolute
+output error is $3.33\times10^{-8}$\%, the 95th percentile is 0.123\%, and the
+maximum is 0.188\%.  The small non-zero tail is concentrated in blocks with
+multiple swaps, where later swaps in the block are affected by earlier swaps
+from the same block.
 
 \begin{table}[t]
     \centering
-    \caption{Fig 3.1 --- Simulator validation: simulated vs. observed swaps.}
+    \small
+    \caption{Fig 3.1 --- Simulator validation on observed swaps occurring one block after a daily snapshot.}
     \label{tab:fig31-validation}
-    \begin{tabular}{lrrrrr}
-        \hline
-        Swap ID & Direction & Notional (USD) & Observed price & Simulated price & Error (\%) \\
-        \hline
-        % TODO: Fill rows
-        \hline
+    \begin{tabular}{llrrrr}
+        \toprule
+        Date & Direction & Notional USD & Observed price & Simulated price & Output error \% \\
+        \midrule
+        2025-10-01 & buy WETH  & 2,013  & 4,147.71 & 4,147.71 & $3.33{\times}10^{-8}$ \\
+        2025-10-06 & sell WETH & 507    & 4,515.18 & 4,515.18 & $1.61{\times}10^{-7}$ \\
+        2025-10-09 & buy WETH  & 1,250  & 4,531.61 & 4,531.61 & $7.09{\times}10^{-8}$ \\
+        2025-10-09 & sell WETH & 30,141 & 4,526.23 & 4,526.16 & $-1.62{\times}10^{-3}$ \\
+        2025-10-11 & sell WETH & 47,027 & 3,837.62 & 3,837.62 & $3.50{\times}10^{-9}$ \\
+        2025-10-22 & sell WETH & 24,482 & 3,870.43 & 3,870.43 & $1.50{\times}10^{-9}$ \\
+        \bottomrule
     \end{tabular}
 \end{table}
 
-\subsection{Task 3.2 --- Simulation Grid and Output Dataset}
+\subsection{Task 3.2 --- Simulation Grid}
 \label{subsec:m3-task32}
 
-\subsubsection{Grid definition}
-\label{subsubsec:m3-grid}
-Simulations are run for:
-\begin{itemize}
-    \item Trade sizes (USD notional): \$1K, \$10K, \$50K, \$100K, \$250K, \$500K, \$1M
-    \item Directions: buy WETH (USDC in), sell WETH (WETH in)
-    \item Snapshots: all daily snapshots in the study window
-\end{itemize}
+We evaluate the simulator over a grid that spans small retail-sized trades and
+large institutional-sized trades:
+\[
+    \{1\mathrm{K},10\mathrm{K},50\mathrm{K},100\mathrm{K},250\mathrm{K},
+    500\mathrm{K},1\mathrm{M}\}
+    \times
+    \{\text{buy WETH},\text{sell WETH}\}
+    \times
+    182\text{ snapshots}.
+\]
+This produces 2,548 simulated trades, saved in
+\path{simulated_trades.parquet}.  Each row records the snapshot block and
+timestamp, direction, notional USD, average execution price, pool mid price,
+price impact in bps, slippage in bps net of the 5 bps fee, and the number of
+tick boundaries crossed.  We also store token input/output amounts and the
+final simulated price/tick as diagnostics.
 
-\subsubsection{Recorded outputs (\texttt{simulated\_trades.parquet}, D3.3)}
-\label{subsubsec:m3-outputs}
-% TODO: Confirm and document all saved columns:
-% snapshot_block, snapshot_timestamp, direction, notional_usd,
-% avg_executed_price, mid_price, price_impact_bps, slippage_bps,
-% tick_boundaries_crossed, plus any diagnostic columns.
+The generated grid passes a set of consistency checks.  Every snapshot has
+exactly 14 simulated trades, all sizes and directions are present, required
+metrics are non-missing, price impact is positive, and slippage equals price
+impact minus 5 bps up to numerical precision.  Price impact is also monotone in
+trade size within every snapshot-direction pair.  Median tick-boundary
+crossings rise from zero at \$1K and \$10K trades to 18 at \$1M trades, which
+is exactly the pattern expected when larger trades consume liquidity across
+more initialized ranges.
 
-\paragraph{Definition of reported metrics.}
-% TODO: Add explicit equations for:
-% - average executed price
-% - price impact (bps)
-% - slippage (bps) net of 5 bps fee
-% Make sign conventions explicit for buy vs sell.
-
-\subsection{Task 3.3 --- Price Impact Curve Analysis (D3.5)}
+\subsection{Task 3.3 --- Price Impact Curves}
 \label{subsec:m3-task33}
-% TODO: Describe plotting methodology:
-% - x-axis: trade size (log scale)
-% - y-axis: price impact (bps, log scale if used)
-% - separate buy/sell curves
-% - median curve across snapshots
-% - 10th and 90th percentile bands
+
+The first empirical question is how quickly execution cost grows with trade
+size.  From the simulated trade grid, we compute the median, 10th percentile,
+and 90th percentile of price impact by direction and notional size.
+Figure~\ref{fig:fig32-price-impact} shows these curves on log-log axes.
 
 \begin{figure}[t]
     \centering
-    % TODO: Replace with actual figure include command.
-    % \includegraphics[width=\linewidth]{figures/module3/fig3_2_price_impact_curves.pdf}
-    \fbox{\parbox[c][5cm][c]{0.95\linewidth}{\centering Placeholder for Fig 3.2}}
-    \caption{Fig 3.2 --- Price impact curves by trade size, with median and 10th/90th percentile bands.}
+    \includegraphics[width=0.95\linewidth]{../figs/module3_price_impact_curves.png}
+    \caption{Fig 3.2 --- Simulated price impact by trade size. Solid lines show the median across daily snapshots; shaded areas show the 10th--90th percentile range.}
     \label{fig:fig32-price-impact}
 \end{figure}
 
-\paragraph{Interpretation prompts.}
-\begin{itemize}
-    \item % TODO: Is impact convex in trade size? Is there a regime shift at larger notionals?
-    \item % TODO: Are buy and sell impacts symmetric? If not, relate to liquidity asymmetry around current price.
-    \item % TODO: How does dispersion across days (10th--90th band) vary with size?
-\end{itemize}
+\begin{table}[t]
+    \centering
+    \caption{Median simulated price impact by trade size.}
+    \label{tab:m3-impact-summary}
+    \begin{tabular}{rcc}
+        \toprule
+        Notional USD & Buy WETH median bps & Sell WETH median bps \\
+        \midrule
+        1,000     & 5.10   & 5.10 \\
+        10,000    & 5.97   & 5.97 \\
+        50,000    & 9.84   & 9.87 \\
+        100,000   & 14.67  & 14.69 \\
+        250,000   & 29.10  & 29.29 \\
+        500,000   & 53.49  & 53.43 \\
+        1,000,000 & 102.04 & 102.56 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
-\subsection{Task 3.4 --- Effective Spread from Observed Swaps (D3.6)}
+The buy and sell curves are almost identical in the median snapshot, suggesting
+that liquidity immediately around the current price is broadly balanced on the
+two sides of the book.  The cost curve is strongly convex.  Moving from \$10K
+to \$100K raises median impact from about 6 bps to about 15 bps, while moving
+from \$100K to \$1M raises it to roughly 102 bps.  Dispersion also grows with
+trade size: for \$1M sells, the 10th--90th percentile band spans about 21 to
+211 bps.  At large sizes, execution quality is therefore highly state
+dependent; the same notional can be cheap or expensive depending on how tightly
+liquidity is distributed around the daily price.
+
+\subsection{Task 3.4 --- Effective Spread from Observed Swaps}
 \label{subsec:m3-task34}
 
-\subsubsection{Empirical estimator}
-\label{subsubsec:m3-es-formula}
-For each observed swap $i$, effective spread is:
+The simulations give counterfactual execution costs against daily pool states.
+As a complement, we estimate realised effective spreads directly from observed
+swaps.  For swap $i$,
 \[
-ES_i = 2 D_i \frac{p^{\text{exec}}_i - p^{\text{mid}}_i}{p^{\text{mid}}_i},
+    ES_i =
+    2D_i\frac{p^{exec}_i-p^{mid}_i}{p^{mid}_i},
 \]
-where $D_i=+1$ for buy and $D_i=-1$ for sell.
+where $D_i=+1$ for a buy and $D_i=-1$ for a sell.  The execution price is
+implied by the swap amounts:
+\[
+    p^{exec}_i =
+    \frac{|\mathrm{amount0\_usdc}_i|}
+         {|\mathrm{amount1\_weth}_i|}.
+\]
+The mid price $p^{mid}_i$ is the pool price from \path{slot0()} at the block
+before the swap.  Swaps are then assigned to the same seven notional buckets as
+the simulation grid, using geometric midpoints between adjacent bucket sizes as
+cutoffs.
 
-% TODO: Clarify precisely how:
-% - p_exec is computed from amount0/amount1
-% - p_mid is obtained from slot0 at block immediately before the swap
-% - swaps are filtered and cleaned
-
-\subsubsection{Binning and comparison}
-\label{subsubsec:m3-binning}
-Observed swaps are binned into the same seven notional buckets as the simulation grid.
-% TODO: Report median effective spread per bin and compare to simulated impacts.
+The use of a stratified subset matters most in this section.  A full pass would
+require one historical \path{slot0()} call for each unique swap block, which is
+a large archive-node job.  Instead, we sample 25,000 unique blocks while
+preserving coverage across dates, trade directions, and notional buckets.  This
+design is well suited to the reported statistic, because Fig.~\ref{fig:fig33-effective-spread}
+compares medians by bucket rather than individual swap paths.  Stratification
+prevents the sample from being dominated by the most common small trades or by
+high-activity days, and block-level sampling avoids overweighting blocks that
+contain many swaps but only one previous-block mid price.
 
 \begin{figure}[t]
     \centering
-    % TODO: Replace with actual figure include command.
-    % \includegraphics[width=\linewidth]{figures/module3/fig3_3_effective_spread_comparison.pdf}
-    \fbox{\parbox[c][5cm][c]{0.95\linewidth}{\centering Placeholder for Fig 3.3}}
-    \caption{Fig 3.3 --- Effective spread by trade size: simulation vs empirical observed swaps.}
+    \includegraphics[width=0.95\linewidth]{../figs/module3_effective_spread_by_size.png}
+    \caption{Fig 3.3 --- Median observed effective spread by trade-size bucket compared with the simulated median price impact.}
     \label{fig:fig33-effective-spread}
 \end{figure}
 
-\paragraph{Interpretation prompts.}
-\begin{itemize}
-    \item % TODO: Do empirical spreads align with simulator outputs by size bin?
-    \item % TODO: Which bins show largest discrepancies and why (timing mismatch, MEV, volatility bursts, etc.)?
-    \item % TODO: What does this imply about realism and limitations of the simulator assumptions?
-\end{itemize}
+The observed effective-spread curves increase with trade size, matching the
+direction of the simulator.  For small and medium trades, observed spreads sit
+above simulated impacts.  At \$1K--\$10K, the simulator is close to the 5 bps
+fee floor, while observed spreads are around 10--12 bps.  This gap is
+consistent with effects that the static simulator intentionally leaves out:
+within-block ordering, short-term price movement, routing, and MEV.
 
-\subsection{Robustness Checks and Limitations}
+At the largest bucket, the comparison reverses.  The simulation predicts about
+102 bps for an isolated \$1M trade against the daily pool state, while the
+sampled observed spreads are closer to 45--50 bps.  A plausible interpretation
+is that very large realised trades are not random market orders submitted into
+one static pool state.  They may be split, routed, timed, or executed in blocks
+where liquidity is temporarily deeper than the daily median snapshot.  In that
+sense, the simulator measures mechanical single-pool depth, while the effective
+spread captures realised execution after traders and routers have optimized
+around that depth.
+
+\subsection{Limitations}
 \label{subsec:m3-limitations}
-% TODO: Add brief robustness tests, e.g.:
-% - sensitivity to snapshot timing (00:00 UTC block selection)
-% - alternative validation subsets
-% - precision/rounding sensitivity
-% - missing frictions (gas, latency, MEV, multi-hop routing)
 
-\subsection{Module 3 Deliverables Checklist}
-\label{subsec:m3-checklist}
-\begin{itemize}
-    \item[\(\square\)] \textbf{D3.1} \texttt{swap\_simulator.py}: standalone, documented Uniswap V3 swap simulator.
-    \item[\(\square\)] \textbf{D3.2} \texttt{slippage\_analysis.py}: full simulation grid + all Module 3 figures/tables.
-    \item[\(\square\)] \textbf{D3.3} \texttt{simulated\_trades.parquet}: complete simulation output.
-    \item[\(\square\)] \textbf{D3.4} Fig 3.1 validation table (simulated vs actual, error metrics).
-    \item[\(\square\)] \textbf{D3.5} Fig 3.2 price impact curves with median and percentile bands.
-    \item[\(\square\)] \textbf{D3.6} Fig 3.3 effective spread comparison (simulated vs observed).
-\end{itemize}
+The simulator isolates the mechanical cost of trading through the Uniswap V3
+pool.  It does not model gas, latency, private order flow, multi-hop routing,
+same-block ordering, or strategic order splitting.  The simulation grid also
+uses one daily state per day, whereas observed swaps arrive continuously.  The
+effective-spread comparison is therefore best read as an empirical benchmark
+for the simulator rather than a one-for-one match for every swap.
 
-\subsection{Writing TODOs Before Submission}
-\label{subsec:m3-todos}
-\begin{itemize}
-    \item[\(\square\)] Ensure all figures are self-contained (axis labels, units, legends).
-    \item[\(\square\)] Ensure every equation variable is defined once, with consistent notation.
-    \item[\(\square\)] Cross-reference code artifacts and data files by exact filename.
-    \item[\(\square\)] Add 1--2 paragraph takeaway connecting liquidity shape to execution cost.
-    \item[\(\square\)] Proofread sign conventions (buy/sell, price impact, slippage, effective spread).
-\end{itemize}
+The pre-swap mid-price extraction for Fig.~\ref{fig:fig33-effective-spread}
+uses a stratified sample rather than all 637,982 unique swap blocks.  This is a
+practical compromise, but not an arbitrary one: the sample keeps the dimensions
+needed for the analysis and is large enough to estimate medians in the reported
+size-direction buckets.  A full extraction would reduce sampling uncertainty,
+but it would not change the mechanics of the estimator.
+
+\subsection{Takeaway}
+\label{subsec:m3-takeaway}
+
+The main result is that concentrated liquidity provides very tight execution
+for small trades and increasingly expensive execution for large trades.  Around
+the median daily state, \$1K trades cost about 5.1 bps including the pool fee,
+while \$1M trades cost roughly 102 bps.  Observed effective spreads follow the
+same upward pattern, but they also reveal the gap between a static pool
+simulation and realised execution in the mempool and routing environment.  The
+simulator is therefore useful as a clean measure of pool depth, while the
+effective-spread exercise shows how actual traders interact with that depth.

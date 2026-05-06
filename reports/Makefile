@@ -15,22 +15,29 @@ $(PDF): $(TEX_MAIN).tex $(addsuffix .tex,$(DEFAULT_MODULES))
 selected: $(SELECTED_PDF)
 
 $(SELECTED_MAIN).tex: $(addsuffix .tex,$(MODULES))
-	@printf "\\documentclass[11pt]{article}\n" > $(SELECTED_MAIN).tex
-	@printf "\\usepackage[a4paper,margin=1in]{geometry}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\usepackage[T1]{fontenc}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\usepackage[utf8]{inputenc}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\usepackage{lmodern}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\usepackage{amsmath,amssymb}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\usepackage{graphicx}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\usepackage{booktabs}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\usepackage{hyperref}\n\n" >> $(SELECTED_MAIN).tex
-	@printf "\\title{Final Project Report (Selected Modules)}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\author{}\n" >> $(SELECTED_MAIN).tex
-	@printf "\\date{\\today}\n\n" >> $(SELECTED_MAIN).tex
-	@printf "\\begin{document}\n\\maketitle\n\\tableofcontents\n\\newpage\n\n" >> $(SELECTED_MAIN).tex
-	@printf "\\section{Introduction}\n%% Optional brief intro for selected build.\n\n" >> $(SELECTED_MAIN).tex
-	@for m in $(MODULES); do printf "\\input{$$m.tex}\n" >> $(SELECTED_MAIN).tex; done
-	@printf "\n\\section{Conclusion}\n%% Optional brief conclusion for selected build.\n\n\\end{document}\n" >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\documentclass[11pt]{article}' > $(SELECTED_MAIN).tex
+	@printf '%s\n' '\usepackage[a4paper,margin=1in]{geometry}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\usepackage[T1]{fontenc}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\usepackage[utf8]{inputenc}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\usepackage{lmodern}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\usepackage{amsmath,amssymb}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\usepackage{graphicx}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\usepackage{booktabs}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n\n' '\usepackage{hyperref}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\title{Final Project Report (Selected Modules)}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\author{}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n\n' '\date{\today}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\begin{document}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\maketitle' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\tableofcontents' >> $(SELECTED_MAIN).tex
+	@printf '%s\n\n' '\newpage' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\section{Introduction}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n\n' '% Optional brief intro for selected build.' >> $(SELECTED_MAIN).tex
+	@for m in $(MODULES); do printf '%s\n' "\\input{$$m.tex}" >> $(SELECTED_MAIN).tex; done
+	@printf '%s\n' '' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\section{Conclusion}' >> $(SELECTED_MAIN).tex
+	@printf '%s\n\n' '% Optional brief conclusion for selected build.' >> $(SELECTED_MAIN).tex
+	@printf '%s\n' '\end{document}' >> $(SELECTED_MAIN).tex
 
 $(SELECTED_PDF): $(SELECTED_MAIN).tex
 	latexmk -pdf -interaction=nonstopmode -halt-on-error $(SELECTED_MAIN).tex
