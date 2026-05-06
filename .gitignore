@@ -1,13 +1,15 @@
 ## Data outputs (parquet)
-data/**/*.parquet
 data/_archive/
 data/archive/
 data/checkpoints/
 data/processed/exports
+data/processed/
 data/raw/*/
 data/**/*.sqlite
 data/**/*.sqlite-shm
 data/**/*.sqlite-wal
+
+reports/out/
 
 ## Local environment
 .env
