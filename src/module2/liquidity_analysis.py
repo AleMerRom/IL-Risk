@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from TVL import run_tvl_analysis
-from concentration_metrics import ILR
+from concentration_metrics import ILR, LHHI
 
 FIGURE_DIR = Path("data/results/module_2/figures")
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -28,6 +28,7 @@ def main():
     liquidity_profile_raw_overlay(df, slot0)
     run_tvl_analysis()
     ILR(df=df, slot0=slot0)
+    LHHI(df=df, slot0=slot0)
 
 
 def find_snapshot_dates(df):
