@@ -2,14 +2,19 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
+
+FIGURE_DIR = Path("data/results/module_2/figures")
+FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+PROFILE_WINDOW = 0.20
 
 def main():
     df = pd.read_parquet('data/processed/liquidity_snapshots.parquet')
+    slot0 = pd.read_parquet('data/processed/slot0_snapshots.parquet')
     df['price'] = df['tick'].apply(tick_to_price)
 
-    liquidity_snapshots(df)
+    liquidity_snapshots(df, slot0)
 
-    
 
 def find_snapshot_dates(df):
     start_date = df['date'].min()
@@ -18,32 +23,48 @@ def find_snapshot_dates(df):
     return [start_date, high_volatility_date, end_date]
 
 def get_snapshot(df, date):
-    snapshot = df[df['date'] == date]
-    snapshot.sort_values(by='price', ascending=True, inplace=True)
+    snapshot = df[df['date'] == date].copy()
+    snapshot = snapshot.sort_values('price')
     return snapshot
 
 def tick_to_price(tick):
-    return 1.0001 ** tick
+    return 10**12 /(1.0001 ** tick)
 
-def liquidity_snapshots(df):
+def focus_snapshot(snapshot, current_price):
+    snapshot = snapshot.copy()
+    snapshot['active_liquidity_float'] = snapshot['active_liquidity'].astype(float)
+    lower_bound = current_price * (1 - PROFILE_WINDOW)
+    upper_bound = current_price * (1 + PROFILE_WINDOW)
+    focused = snapshot[
+        (snapshot['price'] >= lower_bound) &
+        (snapshot['price'] <= upper_bound)
+    ].copy()
+    return focused
+
+def liquidity_snapshots(df, slot0):
     dates = find_snapshot_dates(df)
 
     fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(18, 5), sharey=True)
 
     for ax, d in zip(axes, dates):
         snapshot = get_snapshot(df, d)
-        ax.bar(snapshot['price'], snapshot['liquidity'], width=0.0005)
+        current_price = slot0.loc[slot0['date'] == d, 'price_usdc_per_weth'].iloc[0]
+        snapshot = focus_snapshot(snapshot, current_price)
+        ax.step(
+            snapshot['price'],
+            snapshot['active_liquidity_float'],
+            where='post',
+        )
         ax.set_title(f'Liquidity Snapshot on {d}')
-        ax.set_xlabel('Price')
-        ax.set_ylabel('Liquidity')
-        current_price = tick_to_price(snapshot['tick'].iloc[0])
+        ax.set_xlabel('USDC per WETH')
         ax.axvline(x=current_price, color='red', linestyle='--', label='Current Price')
+        ax.legend()
     
     axes[0].set_ylabel("Active Liquidity")
     plt.tight_layout()
+    plt.savefig(FIGURE_DIR / "fig_2_1_liquidity_profiles.png", dpi=300, bbox_inches="tight")
     plt.show()
 
 
 if __name__ == "__main__":
     main()
-
