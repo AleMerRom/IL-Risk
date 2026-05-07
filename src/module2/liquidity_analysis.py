@@ -4,6 +4,7 @@ from module2.tiled_graph import *
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+from TVL import run_tvl_analysis
 
 FIGURE_DIR = Path("data/results/module_2/figures")
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -24,6 +25,7 @@ def main():
     liquidity_profile_weekly_tiles(df, slot0)
     liquidity_profile_ridgeline(df, slot0)
     liquidity_profile_raw_overlay(df, slot0)
+    run_tvl_analysis()
 
 
 def find_snapshot_dates(df):
