@@ -1,5 +1,6 @@
 #This file is part of Module 2: Liquidity Distribution Analysis
 import pandas as pd
+from module2.tiled_graph import *
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -7,13 +8,22 @@ from pathlib import Path
 FIGURE_DIR = Path("data/results/module_2/figures")
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_WINDOW = 0.20
+PROFILE_BINS = 100
 
 def main():
     df = pd.read_parquet('data/processed/liquidity_snapshots.parquet')
     slot0 = pd.read_parquet('data/processed/slot0_snapshots.parquet')
     df['price'] = df['tick'].apply(tick_to_price)
 
+    ##TASK 2.1 PART A - LIQUIDITY PROFILES AT KEY SNAPSHOT DATES
     liquidity_snapshots(df, slot0)
+    
+    ##TASK 2.1 PART B - LIQUIDITY PROFILE EVOLUTION ACROSS ALL DAILY SNAPSHOTS
+    liquidity_profile_timeseries(df, slot0)
+    liquidity_profile_monthly_multiples(df, slot0)
+    liquidity_profile_weekly_tiles(df, slot0)
+    liquidity_profile_ridgeline(df, slot0)
+    liquidity_profile_raw_overlay(df, slot0)
 
 
 def find_snapshot_dates(df):
