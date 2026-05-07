@@ -24,48 +24,46 @@ You must submit:
 Important constraint:
 - **All on-chain data must be extracted directly via RPC calls to an Ethereum archive node**. The grader will verify direct on-chain calls.
 
-## Expected data outputs (Parquet)
-Place all produced datasets in `data/processed/`:
+## Data layout
+`data/processed/` contains only the canonical Module 1 source datasets used by later modules:
 - `swap_events.parquet` (Module 1)
 - `mint_burn_events.parquet` (Module 1; full history since deployment)
 - `collect_events.parquet` (Module 1 support file for Module 4 fee analysis)
 - `liquidity_snapshots.parquet` (Module 1; daily tick-level liquidity map)
 - `slot0_snapshots.parquet` (Module 1; daily slot0 at snapshot blocks)
-- `simulated_trades.parquet` (Module 3)
-- `perp_prices.parquet` (Module 5)
-- `funding_rates.parquet` (Module 5)
-- `hedge_results.parquet` (Module 5)
+
+Generated deliverables and support tables live under `data/results/module_*`:
+- `data/results/module_1/`: optional validation and report-ready check tables.
+- `data/results/module_3/`: `simulated_trades.parquet`, price-impact summaries, effective-spread outputs, and Module 3 figures.
+- `data/results/module_4/`: synthetic LP position tables, fee/IL/net P&L time series, and Module 4 figures.
+- `data/results/module_5/`: reserved for `perp_prices.parquet`, `funding_rates.parquet`, `hedge_results.parquet`, and Module 5 figures.
+
+Old raw part files, checkpoints, previous archives, and one-off exports are kept locally under `data/_archive/`.
 
 ## Repo structure
-This repository is structured so that `src/il_risk/` is a reusable Python package (RPC infra, Uniswap
-V3 domain logic, and per-module pipelines), while `scripts/` contains thin runnable entrypoints.
+The code is organized around the deliverable filenames from the project PDF.  The repo is meant to
+be easy to inspect for grading, not packaged as a reusable library.
 
 ```
 .
 ├── data/
-│   ├── raw/                 # any raw downloads / intermediate artifacts
-│   └── processed/           # final parquet outputs listed above
-├── figs/                    # figures used in the report
-├── notebooks/               # optional exploratory notebooks
-├── reports/                 # final write-up (PDF/LaTeX/Markdown, your choice)
-├── scripts/                 # CLI entrypoints
-├── src/il_risk/             # package code
-│   ├── constants.py
-│   ├── schemas.py
-│   ├── cli.py               # Typer CLI wiring for Module 1 workflows/validation
-│   ├── rpc/                 # Ethereum RPC client + block index/cache
-│   ├── uniswap_v3/          # Uniswap V3 events + math + swap simulator
-│   └── pipelines/           # per-module data workflows (read/write Parquet)
-│       ├── module1/
-│       └── module3/
+│   ├── processed/           # canonical Module 1 source parquet files
+│   ├── results/             # generated module deliverables and figures
+│   └── _archive/            # local backups, raw parts, caches, old exports
+├── src/
+│   ├── module1/             # data_extraction.py and extraction helpers
+│   ├── module2/             # liquidity_analysis.py
+│   ├── module3/             # swap_simulator.py and slippage_analysis.py
+│   ├── module4/             # lp_analytics.py
+│   ├── module5/             # hedge_backtest.py
+│   └── shared/              # constants, RPC, schemas, Uniswap math/events
 └── tests/                   # schema checks / validations
 ```
 
 Guiding rule:
-- `src/il_risk/uniswap_v3/`: domain logic (math, decoding, simulator)
-- `src/il_risk/rpc/`: RPC/networking + chain access helpers
-- `src/il_risk/pipelines/module*/`: “module workflows” that produce Parquet outputs
-- `scripts/`: entrypoints only (arg parsing + calling pipelines)
+- Deliverable files keep their PDF names inside the corresponding `src/module*/` folder.
+- Small shared helpers stay in `src/shared/` only when they avoid meaningful duplication.
+- Run commands with `PYTHONPATH=src`.
 
 ## Module 1 extraction
 
@@ -75,36 +73,43 @@ endpoint is not archive-capable.
 Run the full Module 1 refresh:
 
 ```bash
-PYTHONPATH=src python scripts/data_extraction.py extract all
+PYTHONPATH=src python src/module1/data_extraction.py extract all
 ```
 
 Useful individual commands:
 
 ```bash
-PYTHONPATH=src python scripts/data_extraction.py archive-current
-PYTHONPATH=src python scripts/data_extraction.py extract mints-burns
-PYTHONPATH=src python scripts/data_extraction.py extract collects
-PYTHONPATH=src python scripts/data_extraction.py extract swaps
-PYTHONPATH=src python scripts/data_extraction.py extract slot0
-PYTHONPATH=src python scripts/data_extraction.py extract liquidity-snapshots
-PYTHONPATH=src python scripts/data_extraction.py extract swap-mid-prices
-PYTHONPATH=src python scripts/data_extraction.py validate
+PYTHONPATH=src python src/module1/data_extraction.py archive-current
+PYTHONPATH=src python src/module1/data_extraction.py extract mints-burns
+PYTHONPATH=src python src/module1/data_extraction.py extract collects
+PYTHONPATH=src python src/module1/data_extraction.py extract swaps
+PYTHONPATH=src python src/module1/data_extraction.py extract slot0
+PYTHONPATH=src python src/module1/data_extraction.py extract liquidity-snapshots
+PYTHONPATH=src python src/module1/data_extraction.py extract swap-mid-prices
+PYTHONPATH=src python src/module1/data_extraction.py validate
 ```
 
-Paul’s normalized draft files are archived under:
+Older normalized drafts and raw extraction leftovers are archived under:
 
 ```text
-data/archive/paul_end_of_day_2025-10-2026-03/
+data/_archive/
 ```
 
 ## Module 3 simulation (slippage grid)
-The simulator lives in `src/il_risk/uniswap_v3/swap_simulator.py` and the Module 3 workflow lives in
-`src/il_risk/pipelines/module3/slippage_analysis.py`.
+The standalone simulator lives in `src/module3/swap_simulator.py`; the Module 3 workflow lives in
+`src/module3/slippage_analysis.py`.
 
 To generate `simulated_trades.parquet` from the Module 1 snapshot Parquets:
 
 ```bash
-PYTHONPATH=src python -c "from il_risk.pipelines.module3.slippage_analysis import run_simulation_grid; run_simulation_grid()"
+PYTHONPATH=src python src/module3/slippage_analysis.py run-all --allow-mid-price-subset
+```
+
+## Module 4 LP analytics
+The Module 4 workflow lives in `src/module4/lp_analytics.py`.
+
+```bash
+PYTHONPATH=src python src/module4/lp_analytics.py run-all
 ```
 
 ## Data dictionary

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 import pandas as pd
 from eth_abi import encode as abi_encode
 
-from il_risk.pipelines.module1.compact import extract_swap_mid_prices
-from il_risk.uniswap_v3.math import get_sqrt_ratio_at_tick
+from module1.extract_swap_mid_prices import extract_swap_mid_prices
+from shared.uniswap_math import get_sqrt_ratio_at_tick
 
 
 class FakeRpc:
@@ -85,3 +86,43 @@ def test_extract_swap_mid_prices_fetches_previous_block_per_unique_swap_block(tm
     )
     assert resumed_rpc.called_blocks == []
     assert resumed["block_number"].tolist() == [100, 102]
+
+
+def test_extract_swap_mid_prices_can_sample_reproducible_strata(tmp_path) -> None:
+    try:
+        import pyarrow  # noqa: F401
+    except ModuleNotFoundError:
+        return
+
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    swaps_path = processed / "swap_events.parquet"
+    output_path = processed / "swap_mid_prices.parquet"
+    rows = []
+    for block in range(100, 130):
+        rows.append(
+            {
+                "block_number": block,
+                "date": "2026-01-01" if block < 115 else "2026-01-02",
+                "trade_direction": "buy_weth" if block % 2 else "sell_weth",
+                "usd_notional": 1_000 if block % 3 else 100_000,
+            }
+        )
+    pd.DataFrame(rows).to_parquet(swaps_path, index=False)
+
+    rpc = FakeRpc()
+    result = extract_swap_mid_prices(
+        rpc,  # type: ignore[arg-type]
+        data_dir=tmp_path,
+        swap_events_path=swaps_path,
+        output_path=output_path,
+        batch_size=5,
+        sample_blocks=12,
+        sample_seed=7,
+    )
+
+    assert len(result) == 12
+    assert result["block_number"].is_unique
+    assert rpc.called_blocks == [block - 1 for block in result["block_number"]]
+    metadata = json.loads(output_path.with_suffix(".metadata.json").read_text())
+    assert metadata["usd_notional_bucket_edges"][-1] == "Infinity"

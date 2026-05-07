@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pandas as pd
 
-from il_risk.pipelines.module3.slippage_analysis import (
+from module3.slippage_analysis import (
     assign_trade_size_bucket,
     compute_effective_spreads,
     plot_price_impact_curves,
@@ -13,7 +13,7 @@ from il_risk.pipelines.module3.slippage_analysis import (
     summarize_effective_spreads,
     summarize_price_impact,
 )
-from il_risk.uniswap_v3.math import get_sqrt_ratio_at_tick
+from shared.uniswap_math import get_sqrt_ratio_at_tick
 
 
 def test_run_simulation_grid_with_synthetic_snapshots(tmp_path) -> None:
@@ -251,6 +251,48 @@ def test_compute_effective_spreads_from_dataframes() -> None:
     assert buy["execution_price_usdc_per_weth"] == 3_000.0
     assert sell["execution_price_usdc_per_weth"] == 2_980.0
     assert set(spreads["size_bucket_usd"]) == {1_000.0}
+
+
+def test_compute_effective_spreads_allows_mid_price_subset() -> None:
+    swaps = pd.DataFrame(
+        [
+            {
+                "block_number": 100,
+                "block_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                "tx_hash": "0xabc",
+                "log_index": 1,
+                "amount0_usdc": 3_000.0,
+                "amount1_weth": -1.0,
+                "trade_direction": "buy_weth",
+                "usd_notional": 3_000.0,
+                "date": "2026-01-01",
+            },
+            {
+                "block_number": 101,
+                "block_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                "tx_hash": "0xdef",
+                "log_index": 2,
+                "amount0_usdc": -2_980.0,
+                "amount1_weth": 1.0,
+                "trade_direction": "sell_weth",
+                "usd_notional": 2_980.0,
+                "date": "2026-01-01",
+            },
+        ]
+    )
+    mid_prices = pd.DataFrame(
+        [{"block_number": 100, "mid_price_usdc_per_weth": 2_990.0}]
+    )
+
+    spreads = compute_effective_spreads(
+        swaps,
+        mid_prices,
+        trade_size_buckets_usd=(1_000, 10_000),
+        write_output=False,
+        allow_mid_price_subset=True,
+    )
+
+    assert spreads["block_number"].tolist() == [100]
 
 
 def test_summarize_effective_spreads_from_dataframe() -> None:
