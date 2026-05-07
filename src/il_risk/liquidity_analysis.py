@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def main():
-    df = pd.read_parquet('data/liquidity_data.parquet')
+    df = pd.read_parquet('data/processed/liquidity_snapshots.parquet')
     df['price'] = df['tick'].apply(tick_to_price)
 
     liquidity_snapshots(df)
@@ -42,4 +42,8 @@ def liquidity_snapshots(df):
     axes[0].set_ylabel("Active Liquidity")
     plt.tight_layout()
     plt.show()
+
+
+if __name__ == "__main__":
+    main()
 
