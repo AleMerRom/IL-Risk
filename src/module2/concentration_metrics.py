@@ -148,5 +148,5 @@ def _save_lhhi_outputs(result):
     ax1.set_title("Liquidity HHI and ETH Price")
     fig.autofmt_xdate()
     plt.tight_layout()
-    plt.savefig(DEFAULT_FIGURES_DIR / "fig_2_4_lhhi_eth_price.png", dpi=300, bbox_inches="tight")
+    plt.savefig(DEFAULT_FIGURES_DIR / "fig_2_3_lhhi_eth_price.png", dpi=300, bbox_inches="tight")
     plt.show()

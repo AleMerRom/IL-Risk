@@ -21,13 +21,20 @@ def main():
     liquidity_snapshots(df, slot0)
     
     ##TASK 2.1 PART B - LIQUIDITY PROFILE EVOLUTION ACROSS ALL DAILY SNAPSHOTS
-    liquidity_profile_timeseries(df, slot0)
-    liquidity_profile_monthly_multiples(df, slot0)
-    liquidity_profile_weekly_tiles(df, slot0)
-    liquidity_profile_ridgeline(df, slot0)
-    liquidity_profile_raw_overlay(df, slot0)
+    liquidity_profile_monthly_price_heatmaps(df, slot0)
+    #liquidity_profile_timeseries(df, slot0)
+    #liquidity_profile_monthly_multiples(df, slot0)
+    #liquidity_profile_weekly_tiles(df, slot0)
+    #liquidity_profile_ridgeline(df, slot0)
+    #liquidity_profile_raw_overlay(df, slot0)
+
+    ##TASK 2.2 - LIQUIDITY CONCENTRATION METRICS
     run_tvl_analysis()
+
+    ##TASK 2.3 - LIQUIDITY CONCENTRATION METRICS OVER TIME
+    #Metric 1 - ILR
     ILR(df=df, slot0=slot0)
+    #Metric 2 - LHHI
     LHHI(df=df, slot0=slot0)
 
 
