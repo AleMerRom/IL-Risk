@@ -87,6 +87,36 @@ def liquidity_snapshots(df, slot0):
     plt.savefig(FIGURE_DIR / "fig_2_1_liquidity_profiles.png", dpi=300, bbox_inches="tight")
     plt.show()
 
+def liquidity_snapshots_full_price_annex(df, slot0):
+    dates = find_snapshot_dates(df)
+    positive_prices = df.loc[df['price'] > 0, 'price']
+    lower_price = positive_prices.quantile(0.01)
+    upper_price = positive_prices.quantile(0.99)
+
+    fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(18, 5), sharey=True)
+
+    for ax, d in zip(axes, dates):
+        snapshot = get_snapshot(df, d)
+        current_price = slot0.loc[slot0['date'] == d, 'price_usdc_per_weth'].iloc[0]
+        snapshot['active_liquidity_float'] = snapshot['active_liquidity'].astype(float)
+        snapshot = snapshot[snapshot['price'] > 0]
+        ax.step(
+            snapshot['price'],
+            snapshot['active_liquidity_float'],
+            where='post',
+        )
+        ax.set_yscale('log')
+        ax.set_xlim(lower_price, upper_price)
+        ax.set_title(f'Full Price Liquidity Snapshot on {d}')
+        ax.set_xlabel('USDC per WETH')
+        ax.axvline(x=current_price, color='red', linestyle='--', label='Current Price')
+        ax.legend()
+    
+    axes[0].set_ylabel("Active Liquidity (log scale)")
+    plt.tight_layout()
+    plt.savefig(FIGURE_DIR / "annex_fig_2_1_full_price_liquidity_profiles.png", dpi=300, bbox_inches="tight")
+    plt.show()
+
 
 if __name__ == "__main__":
     main()
