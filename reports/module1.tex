@@ -1,0 +1,70 @@
+\section{Module 1 --- On-Chain Data Extraction}
+\label{sec:module1}
+
+Module 1 builds the raw on-chain data layer used by all later analysis.  The
+pool is the Uniswap V3 USDC/WETH 0.05\% pool at
+\path{0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640}.  The swap study window is
+1 October 2025 through 31 March 2026, while liquidity-changing events are read
+from the pool deployment block, 12,376,729, so that the opening liquidity map can
+be reconstructed from the full history of Mint and Burn events.
+
+\subsection{Extracted Files}
+\label{subsec:m1-files}
+
+All event data were extracted directly through Ethereum archive-node RPC calls.
+The extraction script resolves the study-window blocks from UTC timestamps,
+downloads raw pool logs, decodes them with the pool ABI, resolves timestamps once
+per unique block, and writes compact Parquet files.  The output data dictionary
+is included in the repository README.
+
+The main swap file, \path{swap_events.parquet}, contains 1,095,286 decoded swaps
+across 637,982 unique blocks.  The timestamp range is
+2025-10-01 00:00:11 UTC to 2026-03-31 23:59:59 UTC, so the file is bounded to
+the required six-month window.  Direction is nearly balanced: 534,929 swaps are
+\path{buy_weth} and 560,357 are \path{sell_weth}.  Aggregating absolute USDC
+notional gives total pool volume of \$21.39 billion over the sample, split
+almost evenly between buys (\$10.70 billion) and sells (\$10.69 billion).
+
+The liquidity event file, \path{mint_burn_events.parquet}, contains 427,934
+events from deployment through the end of the study window: 204,398 Mints and
+223,536 Burns.  The support file \path{collect_events.parquet} contains 218,219
+Collect events over the same historical range and is used later for fee
+analytics.  The daily state files contain 182 midnight-UTC snapshots:
+\path{slot0_snapshots.parquet} stores the pool price and active tick, while
+\path{liquidity_snapshots.parquet} stores 264,149 initialized-tick rows, or
+about 1,451 ticks per snapshot on average.
+
+\subsection{Validation}
+\label{subsec:m1-validation}
+
+We first apply schema and coverage checks to every generated file.  The checks
+verify the PDF-required columns, reject duplicate event identities
+(\path{tx_hash}, \path{log_index}), require valid tick spacing and Mint/Burn
+signs, and confirm that both slot0 and liquidity snapshots cover exactly 182
+daily blocks.  All checks pass on the submitted files.
+
+The volume cross-check aggregates decoded swaps by direction and compares the
+resulting totals against the event-level signs.  Since USDC is token0, a
+\path{buy_weth} swap has positive USDC flow into the pool and a \path{sell_weth}
+swap has positive WETH flow into the pool.  The aggregate absolute USDC amount
+equals the reported USD notional total, \$21.39 billion, and the buy/sell
+notional split differs by less than 0.2\%.  This is consistent with the decoded
+trade direction convention and gives no evidence of missing sign flips or
+decimal-scaling errors.
+
+We also compare each daily slot0 price with the most recent decoded swap price
+at or before the snapshot block.  The validation table contains 181 comparable
+snapshots; 180 are within the 1 bp tolerance used by the script.  The median
+absolute difference is 0.0000 bps, and the 95th percentile is 0.0018 bps.  The
+only larger row is 11.71 bps on the 2026-02-05 snapshot, where the comparison
+swap is in the same block as the snapshot.  This appears to be a same-block
+ordering edge case in the diagnostic table rather than a systematic price
+conversion problem: the remaining comparisons are effectively exact.
+
+Finally, the reconstructed liquidity map is checked against direct archive
+\path{pool.ticks()} calls.  At snapshot block 23,479,243, we sampled 10
+initialized ticks from \path{liquidity_snapshots.parquet} and queried the pool
+contract at that same historical block.  Both \path{liquidityGross} and
+\path{liquidityNet} matched exactly for all 10 sampled ticks.  This confirms
+that replaying the Mint and Burn history reconstructs the on-chain tick state at
+the snapshot block, with no discrepancies found in the spot-check.
