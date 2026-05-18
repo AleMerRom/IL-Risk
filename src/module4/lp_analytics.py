@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import asdict, dataclass
+from decimal import Decimal, getcontext
 import os
 from math import ceil, floor, log, sqrt
 from pathlib import Path
@@ -12,8 +14,8 @@ from typing import Iterable
 import pandas as pd
 import typer
 
-from shared.constants import FEE_TIER, TICK_SPACING
-from shared.uniswap_math import MAX_TICK, MIN_TICK
+from shared.constants import FEE_TIER, Q96, TICK_SPACING
+from shared.uniswap_math import MAX_TICK, MIN_TICK, get_sqrt_ratio_at_tick
 
 RAW_PRICE_SCALE = 10**12
 USDC_RAW_SCALE = 10**6
@@ -22,6 +24,13 @@ DEFAULT_NOTIONAL_USD = 100_000.0
 DEFAULT_RESULTS_DIR = Path("data/results/module_4")
 DEFAULT_FIGURES_DIR = DEFAULT_RESULTS_DIR / "figures"
 DEFAULT_PROCESSED_DIR = Path("data/processed")
+getcontext().prec = 80
+
+_DECIMAL_ONE = Decimal(1)
+_Q96_DECIMAL = Decimal(Q96)
+_USDC_RAW_SCALE_DECIMAL = Decimal(USDC_RAW_SCALE)
+_WETH_RAW_SCALE_DECIMAL = Decimal(WETH_RAW_SCALE)
+_RAW_PRICE_SCALE_DECIMAL = Decimal(RAW_PRICE_SCALE)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -51,6 +60,13 @@ class LPPosition:
     initial_weth: float
     initial_usdc: float
     initial_value_usd: float
+
+
+@dataclass
+class _ReplayState:
+    sqrt_price: Decimal
+    current_tick: int
+    active_liquidity: Decimal
 
 
 DEFAULT_POSITION_SPECS: tuple[tuple[str, float | None, str, str], ...] = (
@@ -95,6 +111,8 @@ def run_lp_analytics(
     data_dir: Path | str = Path("data"),
     slot0_path: Path | str | None = None,
     swaps_path: Path | str | None = None,
+    liquidity_path: Path | str | None = None,
+    mint_burns_path: Path | str | None = None,
     positions_output_path: Path | str | None = None,
     timeseries_output_path: Path | str | None = None,
     figs_dir: Path | str = DEFAULT_FIGURES_DIR,
@@ -107,6 +125,16 @@ def run_lp_analytics(
     base = Path(data_dir)
     slot0_path = Path(slot0_path) if slot0_path else base / "processed" / "slot0_snapshots.parquet"
     swaps_path = Path(swaps_path) if swaps_path else base / "processed" / "swap_events.parquet"
+    liquidity_path = (
+        Path(liquidity_path)
+        if liquidity_path
+        else base / "processed" / "liquidity_snapshots.parquet"
+    )
+    mint_burns_path = (
+        Path(mint_burns_path)
+        if mint_burns_path
+        else base / "processed" / "mint_burn_events.parquet"
+    )
     positions_output_path = (
         Path(positions_output_path)
         if positions_output_path
@@ -120,8 +148,12 @@ def run_lp_analytics(
 
     slot0 = pd.read_parquet(slot0_path).sort_values("snapshot_block").reset_index(drop=True)
     swaps = pd.read_parquet(swaps_path)
+    liquidity_snapshots = pd.read_parquet(liquidity_path)
+    mint_burns = pd.read_parquet(mint_burns_path)
     _validate_slot0(slot0)
     _validate_swaps(swaps)
+    _validate_liquidity_snapshots(liquidity_snapshots)
+    _validate_mint_burns(mint_burns)
 
     entry = slot0.iloc[0]
     positions = build_representative_positions(
@@ -131,7 +163,13 @@ def run_lp_analytics(
     )
 
     principal = compute_lp_principal_timeseries(slot0, positions)
-    fees = compute_fee_income_timeseries(swaps, slot0, positions)
+    fees = compute_fee_income_timeseries(
+        swaps,
+        slot0,
+        positions,
+        liquidity_snapshots,
+        mint_burns,
+    )
     timeseries = principal.merge(
         fees,
         on=["position_id", "date", "snapshot_block", "snapshot_timestamp"],
@@ -140,6 +178,13 @@ def run_lp_analytics(
     )
     timeseries["daily_fee_usd"] = timeseries["daily_fee_usd"].fillna(0.0)
     timeseries["cumulative_fee_usd"] = timeseries["cumulative_fee_usd"].fillna(0.0)
+    for column in [
+        "daily_fee0_usdc",
+        "daily_fee1_weth",
+        "cumulative_fee0_usdc",
+        "cumulative_fee1_weth",
+    ]:
+        timeseries[column] = timeseries[column].fillna(0.0)
     timeseries["net_fee_minus_il_usd"] = timeseries["cumulative_fee_usd"] - timeseries["impermanent_loss_usd"]
     timeseries = timeseries[
         [
@@ -154,7 +199,11 @@ def run_lp_analytics(
             "lp_value_usd",
             "hodl_value_usd",
             "impermanent_loss_usd",
+            "daily_fee0_usdc",
+            "daily_fee1_weth",
             "daily_fee_usd",
+            "cumulative_fee0_usdc",
+            "cumulative_fee1_weth",
             "cumulative_fee_usd",
             "net_fee_minus_il_usd",
         ]
@@ -176,18 +225,35 @@ def compute_fee_income_timeseries(
     swaps: pd.DataFrame,
     slot0: pd.DataFrame,
     positions: pd.DataFrame,
+    liquidity_snapshots: pd.DataFrame,
+    mint_burns: pd.DataFrame,
     *,
     fee_rate: float = FEE_TIER / 1_000_000,
 ) -> pd.DataFrame:
-    """Compute cumulative LP fee income at each daily snapshot block."""
+    """Compute cumulative LP fee income with interval-level fee-growth replay.
+
+    Swap events contain post-swap tick and liquidity.  For fees, we instead
+    start from the first daily liquidity snapshot, replay Mint/Burn events to
+    keep the historical liquidity map current, and split each swap across pool
+    tick boundaries plus the synthetic LP range boundaries.  For each interval,
+    token0/token1 fees increment fee growth per unit liquidity.  Each synthetic
+    LP is treated as a counterfactual single entrant, so its fee-growth
+    denominator is ``L_pool + L_position`` while it is active.
+    """
 
     snapshots = slot0[
         ["date", "snapshot_block", "snapshot_timestamp"]
     ].sort_values("snapshot_block").reset_index(drop=True)
+    start_block = int(snapshots["snapshot_block"].min())
+    end_block = int(snapshots["snapshot_block"].max())
 
     swaps_work = swaps[
         [
             "block_number",
+            "log_index",
+            "amount0_raw",
+            "amount1_raw",
+            "sqrt_price_x96",
             "tick",
             "amount0_usdc",
             "amount1_weth",
@@ -196,69 +262,394 @@ def compute_fee_income_timeseries(
         ]
     ].copy()
     swaps_work["block_number"] = swaps_work["block_number"].astype("int64")
+    swaps_work["log_index"] = swaps_work["log_index"].astype("int64")
     swaps_work["tick"] = swaps_work["tick"].astype("int64")
-    swaps_work["active_liquidity"] = swaps_work["active_liquidity"].astype(float)
-    swaps_work["amount0_usdc"] = swaps_work["amount0_usdc"].astype(float)
-    swaps_work["amount1_weth"] = swaps_work["amount1_weth"].astype(float)
-    swaps_work["price_usdc_per_weth"] = swaps_work["price_usdc_per_weth"].astype(float)
+    positive_liquidity = swaps_work["active_liquidity"].map(_to_decimal) > 0
     swaps_work = swaps_work[
-        (swaps_work["block_number"] > int(snapshots["snapshot_block"].min()))
-        & (swaps_work["block_number"] <= int(snapshots["snapshot_block"].max()))
-        & (swaps_work["active_liquidity"] > 0)
-    ].sort_values("block_number")
+        (swaps_work["block_number"] > start_block)
+        & (swaps_work["block_number"] <= end_block)
+        & positive_liquidity
+    ].sort_values(["block_number", "log_index"])
 
-    rows: list[pd.DataFrame] = []
-    fee0_usdc = swaps_work["amount0_usdc"].clip(lower=0.0) * fee_rate
-    fee1_weth = swaps_work["amount1_weth"].clip(lower=0.0) * fee_rate
-    swap_fee_usd = fee0_usdc + fee1_weth * swaps_work["price_usdc_per_weth"]
+    position_records = positions.to_dict("records")
+    liquidity_net_by_tick, boundaries, boundary_sqrts, state = _build_fee_replay_state(
+        liquidity_snapshots,
+        slot0,
+        position_records,
+        start_block,
+    )
+    fee_events = _replay_fee_events(
+        swaps_work,
+        mint_burns,
+        position_records,
+        liquidity_net_by_tick,
+        boundaries,
+        boundary_sqrts,
+        state,
+        start_block=start_block,
+        end_block=end_block,
+        fee_rate=Decimal(str(fee_rate)),
+    )
 
-    for position in positions.to_dict("records"):
-        in_range = (
-            (swaps_work["tick"] >= int(position["tick_lower"]))
-            & (swaps_work["tick"] < int(position["tick_upper"]))
-        )
-        fee_events = swaps_work.loc[in_range, ["block_number", "active_liquidity"]].copy()
-        if fee_events.empty:
-            cumulative = pd.DataFrame({"block_number": [], "cumulative_fee_usd": []})
-        else:
-            share = float(position["liquidity_raw"]) / fee_events["active_liquidity"]
-            fee_events["fee_usd"] = swap_fee_usd.loc[fee_events.index].to_numpy() * share
-            cumulative = (
-                fee_events.groupby("block_number", as_index=False)["fee_usd"]
-                .sum()
-                .sort_values("block_number")
-            )
-            cumulative["cumulative_fee_usd"] = cumulative["fee_usd"].cumsum()
-
-        position_snapshots = snapshots.copy()
-        if cumulative.empty:
-            position_snapshots["cumulative_fee_usd"] = 0.0
-        else:
-            position_snapshots = pd.merge_asof(
-                position_snapshots,
-                cumulative[["block_number", "cumulative_fee_usd"]],
-                left_on="snapshot_block",
-                right_on="block_number",
-                direction="backward",
-            )
-            position_snapshots["cumulative_fee_usd"] = position_snapshots["cumulative_fee_usd"].fillna(0.0)
-            position_snapshots = position_snapshots.drop(columns=["block_number"])
-        position_snapshots["daily_fee_usd"] = position_snapshots["cumulative_fee_usd"].diff().fillna(
-            position_snapshots["cumulative_fee_usd"]
-        )
-        position_snapshots["position_id"] = position["position_id"]
-        rows.append(position_snapshots)
-
+    rows = [
+        _fees_at_snapshots(snapshots, fee_events, str(position["position_id"]))
+        for position in position_records
+    ]
     return pd.concat(rows, ignore_index=True)[
         [
             "position_id",
             "date",
             "snapshot_block",
             "snapshot_timestamp",
+            "daily_fee0_usdc",
+            "daily_fee1_weth",
             "daily_fee_usd",
+            "cumulative_fee0_usdc",
+            "cumulative_fee1_weth",
             "cumulative_fee_usd",
         ]
     ]
+
+
+def _build_fee_replay_state(
+    liquidity_snapshots: pd.DataFrame,
+    slot0: pd.DataFrame,
+    positions: list[dict],
+    start_block: int,
+) -> tuple[dict[int, Decimal], list[int], list[Decimal], _ReplayState]:
+    snapshot_liquidity = liquidity_snapshots[
+        liquidity_snapshots["snapshot_block"].astype("int64") == start_block
+    ].copy()
+    if snapshot_liquidity.empty:
+        raise ValueError(f"no liquidity snapshot found for start block {start_block}")
+
+    liquidity_net_by_tick = {
+        int(row["tick"]): _to_decimal(row["liquidityNet"])
+        for row in snapshot_liquidity.to_dict("records")
+        if _to_decimal(row["liquidityNet"]) != 0
+    }
+    boundaries = sorted(
+        set(liquidity_net_by_tick)
+        | {int(position["tick_lower"]) for position in positions}
+        | {int(position["tick_upper"]) for position in positions}
+    )
+    boundary_sqrts = [_sqrt_decimal_at_tick(tick) for tick in boundaries]
+
+    first_slot0 = slot0.sort_values("snapshot_block").iloc[0]
+    current_tick = int(first_slot0["current_tick"])
+    start_rows = snapshot_liquidity.sort_values("tick")
+    active_candidates = start_rows[start_rows["tick"].astype("int64") <= current_tick]
+    if active_candidates.empty:
+        raise ValueError("cannot infer starting active liquidity from liquidity snapshot")
+    active_liquidity = _to_decimal(active_candidates.iloc[-1]["active_liquidity"])
+    state = _ReplayState(
+        sqrt_price=_to_decimal(first_slot0["sqrt_price_x96"]) / _Q96_DECIMAL,
+        current_tick=current_tick,
+        active_liquidity=active_liquidity,
+    )
+    return liquidity_net_by_tick, boundaries, boundary_sqrts, state
+
+
+def _replay_fee_events(
+    swaps: pd.DataFrame,
+    mint_burns: pd.DataFrame,
+    positions: list[dict],
+    liquidity_net_by_tick: dict[int, Decimal],
+    boundaries: list[int],
+    boundary_sqrts: list[Decimal],
+    state: _ReplayState,
+    *,
+    start_block: int,
+    end_block: int,
+    fee_rate: Decimal,
+) -> pd.DataFrame:
+    events = _fee_replay_events(swaps, mint_burns, start_block=start_block, end_block=end_block)
+    rows: list[dict] = []
+    for event_type, event in events:
+        if event_type == "mint_burn":
+            _apply_mint_burn_event(event, state, liquidity_net_by_tick, boundaries, boundary_sqrts)
+            continue
+        rows.extend(
+            _fee_rows_for_swap(
+                event,
+                positions,
+                liquidity_net_by_tick,
+                boundaries,
+                boundary_sqrts,
+                state,
+                fee_rate=fee_rate,
+            )
+        )
+        # The per-swap fee path is replayed on a local copy of the state; once
+        # the swap is processed we re-anchor the global state to the event's
+        # recorded post-swap values so the 6-month replay tracks on-chain state
+        # exactly and cannot drift from accumulated floating-point error.
+        state.sqrt_price = _to_decimal(event["sqrt_price_x96"]) / _Q96_DECIMAL
+        state.current_tick = int(event["tick"])
+        state.active_liquidity = _to_decimal(event["active_liquidity"])
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["block_number", "position_id", "fee0_usdc", "fee1_weth", "fee_usd"]
+        )
+    return pd.DataFrame(rows)
+
+
+def _fee_replay_events(
+    swaps: pd.DataFrame,
+    mint_burns: pd.DataFrame,
+    *,
+    start_block: int,
+    end_block: int,
+) -> list[tuple[str, dict]]:
+    swap_events = [
+        ("swap", row)
+        for row in swaps[
+            (swaps["block_number"] > start_block)
+            & (swaps["block_number"] <= end_block)
+        ].to_dict("records")
+    ]
+    mint_burn_events = [
+        ("mint_burn", row)
+        for row in mint_burns[
+            (mint_burns["block_number"].astype("int64") > start_block)
+            & (mint_burns["block_number"].astype("int64") <= end_block)
+        ].to_dict("records")
+    ]
+    return sorted(
+        swap_events + mint_burn_events,
+        key=lambda item: (int(item[1]["block_number"]), int(item[1]["log_index"])),
+    )
+
+
+def _apply_mint_burn_event(
+    event: dict,
+    state: _ReplayState,
+    liquidity_net_by_tick: dict[int, Decimal],
+    boundaries: list[int],
+    boundary_sqrts: list[Decimal],
+) -> None:
+    tick_lower = int(event["tick_lower"])
+    tick_upper = int(event["tick_upper"])
+    delta = _to_decimal(event["liquidity_delta"])
+    _add_liquidity_net(liquidity_net_by_tick, boundaries, boundary_sqrts, tick_lower, delta)
+    _add_liquidity_net(liquidity_net_by_tick, boundaries, boundary_sqrts, tick_upper, -delta)
+    if tick_lower <= state.current_tick < tick_upper:
+        state.active_liquidity += delta
+
+
+def _fee_rows_for_swap(
+    swap: dict,
+    positions: list[dict],
+    liquidity_net_by_tick: dict[int, Decimal],
+    boundaries: list[int],
+    boundary_sqrts: list[Decimal],
+    state: _ReplayState,
+    *,
+    fee_rate: Decimal,
+) -> list[dict]:
+    amount0_raw = _to_decimal(swap["amount0_raw"])
+    amount1_raw = _to_decimal(swap["amount1_raw"])
+    if amount0_raw > 0:
+        direction = "buy_weth"
+        remaining_input = amount0_raw
+        input_scale = _USDC_RAW_SCALE_DECIMAL
+    elif amount1_raw > 0:
+        direction = "sell_weth"
+        remaining_input = amount1_raw
+        input_scale = _WETH_RAW_SCALE_DECIMAL
+    else:
+        return []
+
+    rows: list[dict] = []
+    local_state = _ReplayState(
+        sqrt_price=state.sqrt_price,
+        current_tick=state.current_tick,
+        active_liquidity=state.active_liquidity,
+    )
+    while remaining_input > 0 and local_state.active_liquidity > 0:
+        boundary_tick = _next_replay_boundary(
+            boundaries,
+            boundary_sqrts,
+            local_state.sqrt_price,
+            local_state.current_tick,
+            direction,
+        )
+        if boundary_tick is None:
+            gross_used = remaining_input
+            crosses_tick = False
+        else:
+            boundary_sqrt = _sqrt_decimal_at_tick(boundary_tick)
+            net_needed = _net_input_to_boundary(local_state, boundary_sqrt, direction)
+            if net_needed <= 0:
+                _cross_replay_tick(local_state, liquidity_net_by_tick, boundary_tick, direction)
+                continue
+            gross_needed = net_needed / (_DECIMAL_ONE - fee_rate)
+            crosses_tick = remaining_input >= gross_needed
+            gross_used = gross_needed if crosses_tick else remaining_input
+
+        fee_raw = gross_used * fee_rate
+        if fee_raw > 0:
+            fee0_raw, fee1_raw = _fee_raw_by_token(fee_raw, input_scale)
+            for position in positions:
+                if _position_active(position, local_state.current_tick):
+                    position_liquidity = _to_decimal(position["liquidity_raw"])
+                    denominator = local_state.active_liquidity + position_liquidity
+                    if denominator > 0:
+                        fee0_growth = fee0_raw / denominator
+                        fee1_growth = fee1_raw / denominator
+                        fee0_usdc = position_liquidity * fee0_growth / _USDC_RAW_SCALE_DECIMAL
+                        fee1_weth = position_liquidity * fee1_growth / _WETH_RAW_SCALE_DECIMAL
+                        fee_usd = fee0_usdc + fee1_weth * _human_price_from_sqrt_decimal(
+                            local_state.sqrt_price
+                        )
+                        rows.append(
+                            {
+                                "block_number": int(swap["block_number"]),
+                                "position_id": position["position_id"],
+                                "fee0_usdc": float(fee0_usdc),
+                                "fee1_weth": float(fee1_weth),
+                                "fee_usd": float(fee_usd),
+                            }
+                        )
+
+        remaining_input -= gross_used
+        if not crosses_tick:
+            break
+        _cross_replay_tick(local_state, liquidity_net_by_tick, boundary_tick, direction)
+
+    return rows
+
+
+def _fees_at_snapshots(
+    snapshots: pd.DataFrame,
+    fee_events: pd.DataFrame,
+    position_id: str,
+) -> pd.DataFrame:
+    position_snapshots = snapshots.copy()
+    position_events = fee_events[fee_events["position_id"] == position_id]
+    if position_events.empty:
+        position_snapshots["cumulative_fee0_usdc"] = 0.0
+        position_snapshots["cumulative_fee1_weth"] = 0.0
+        position_snapshots["cumulative_fee_usd"] = 0.0
+    else:
+        cumulative = (
+            position_events.groupby("block_number", as_index=False)[
+                ["fee0_usdc", "fee1_weth", "fee_usd"]
+            ]
+            .sum()
+            .sort_values("block_number")
+        )
+        cumulative["cumulative_fee0_usdc"] = cumulative["fee0_usdc"].cumsum()
+        cumulative["cumulative_fee1_weth"] = cumulative["fee1_weth"].cumsum()
+        cumulative["cumulative_fee_usd"] = cumulative["fee_usd"].cumsum()
+        position_snapshots = pd.merge_asof(
+            position_snapshots,
+            cumulative[
+                [
+                    "block_number",
+                    "cumulative_fee0_usdc",
+                    "cumulative_fee1_weth",
+                    "cumulative_fee_usd",
+                ]
+            ],
+            left_on="snapshot_block",
+            right_on="block_number",
+            direction="backward",
+        )
+        for column in ["cumulative_fee0_usdc", "cumulative_fee1_weth", "cumulative_fee_usd"]:
+            position_snapshots[column] = position_snapshots[column].fillna(0.0)
+        position_snapshots = position_snapshots.drop(columns=["block_number"])
+    position_snapshots["daily_fee0_usdc"] = position_snapshots["cumulative_fee0_usdc"].diff().fillna(
+        position_snapshots["cumulative_fee0_usdc"]
+    )
+    position_snapshots["daily_fee1_weth"] = position_snapshots["cumulative_fee1_weth"].diff().fillna(
+        position_snapshots["cumulative_fee1_weth"]
+    )
+    position_snapshots["daily_fee_usd"] = position_snapshots["cumulative_fee_usd"].diff().fillna(
+        position_snapshots["cumulative_fee_usd"]
+    )
+    position_snapshots["position_id"] = position_id
+    return position_snapshots
+
+
+def _add_liquidity_net(
+    liquidity_net_by_tick: dict[int, Decimal],
+    boundaries: list[int],
+    boundary_sqrts: list[Decimal],
+    tick: int,
+    delta: Decimal,
+) -> None:
+    if tick not in liquidity_net_by_tick and tick not in boundaries:
+        index = bisect_left(boundaries, tick)
+        boundaries.insert(index, tick)
+        boundary_sqrts.insert(index, _sqrt_decimal_at_tick(tick))
+    liquidity_net_by_tick[tick] = liquidity_net_by_tick.get(tick, Decimal(0)) + delta
+
+
+def _next_replay_boundary(
+    boundaries: list[int],
+    boundary_sqrts: list[Decimal],
+    sqrt_price: Decimal,
+    current_tick: int,
+    direction: str,
+) -> int | None:
+    if direction == "buy_weth":
+        index = bisect_left(boundary_sqrts, sqrt_price)
+        if index < len(boundary_sqrts) and boundary_sqrts[index] == sqrt_price and boundaries[index] <= current_tick:
+            return boundaries[index]
+        return boundaries[index - 1] if index > 0 else None
+    index = bisect_left(boundary_sqrts, sqrt_price)
+    if index < len(boundary_sqrts) and boundary_sqrts[index] == sqrt_price and boundaries[index] > current_tick:
+        return boundaries[index]
+    index = bisect_right(boundary_sqrts, sqrt_price)
+    return boundaries[index] if index < len(boundaries) else None
+
+
+def _cross_replay_tick(
+    state: _ReplayState,
+    liquidity_net_by_tick: dict[int, Decimal],
+    boundary_tick: int,
+    direction: str,
+) -> None:
+    liquidity_net = liquidity_net_by_tick.get(boundary_tick, Decimal(0))
+    if direction == "buy_weth":
+        state.active_liquidity -= liquidity_net
+        state.current_tick = boundary_tick - 1
+    else:
+        state.active_liquidity += liquidity_net
+        state.current_tick = boundary_tick
+    state.sqrt_price = _sqrt_decimal_at_tick(boundary_tick)
+
+
+def _net_input_to_boundary(state: _ReplayState, boundary_sqrt: Decimal, direction: str) -> Decimal:
+    if direction == "buy_weth":
+        return state.active_liquidity * ((_DECIMAL_ONE / boundary_sqrt) - (_DECIMAL_ONE / state.sqrt_price))
+    return state.active_liquidity * (boundary_sqrt - state.sqrt_price)
+
+
+def _fee_raw_by_token(fee_raw: Decimal, input_scale: Decimal) -> tuple[Decimal, Decimal]:
+    if input_scale == _USDC_RAW_SCALE_DECIMAL:
+        return fee_raw, Decimal(0)
+    return Decimal(0), fee_raw
+
+
+def _position_active(position: dict, tick: int) -> bool:
+    return int(position["tick_lower"]) <= tick < int(position["tick_upper"])
+
+
+def _sqrt_decimal_at_tick(tick: int) -> Decimal:
+    return Decimal(get_sqrt_ratio_at_tick(tick)) / _Q96_DECIMAL
+
+
+def _human_price_from_sqrt_decimal(sqrt_price: Decimal) -> Decimal:
+    return _RAW_PRICE_SCALE_DECIMAL / (sqrt_price * sqrt_price)
+
+
+def _to_decimal(value: object) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
 
 
 def compute_lp_principal_timeseries(slot0: pd.DataFrame, positions: pd.DataFrame) -> pd.DataFrame:
@@ -499,7 +890,14 @@ def _plot_timeseries(
 
 
 def _validate_slot0(slot0: pd.DataFrame) -> None:
-    required = {"date", "snapshot_block", "snapshot_timestamp", "price_usdc_per_weth", "current_tick"}
+    required = {
+        "date",
+        "snapshot_block",
+        "snapshot_timestamp",
+        "sqrt_price_x96",
+        "price_usdc_per_weth",
+        "current_tick",
+    }
     missing = required - set(slot0.columns)
     if missing:
         raise ValueError(f"slot0 snapshots missing columns: {sorted(missing)}")
@@ -510,6 +908,10 @@ def _validate_slot0(slot0: pd.DataFrame) -> None:
 def _validate_swaps(swaps: pd.DataFrame) -> None:
     required = {
         "block_number",
+        "log_index",
+        "amount0_raw",
+        "amount1_raw",
+        "sqrt_price_x96",
         "tick",
         "amount0_usdc",
         "amount1_weth",
@@ -523,10 +925,28 @@ def _validate_swaps(swaps: pd.DataFrame) -> None:
         raise ValueError("swap events are empty")
 
 
+def _validate_liquidity_snapshots(liquidity_snapshots: pd.DataFrame) -> None:
+    required = {"snapshot_block", "tick", "liquidityNet", "active_liquidity"}
+    missing = required - set(liquidity_snapshots.columns)
+    if missing:
+        raise ValueError(f"liquidity snapshots missing columns: {sorted(missing)}")
+    if liquidity_snapshots.empty:
+        raise ValueError("liquidity snapshots are empty")
+
+
+def _validate_mint_burns(mint_burns: pd.DataFrame) -> None:
+    required = {"block_number", "log_index", "tick_lower", "tick_upper", "liquidity_delta"}
+    missing = required - set(mint_burns.columns)
+    if missing:
+        raise ValueError(f"mint/burn events missing columns: {sorted(missing)}")
+
+
 def _artifact_paths(processed_dir: Path, results_dir: Path, figures_dir: Path) -> dict[str, Path]:
     return {
         "slot0": processed_dir / "slot0_snapshots.parquet",
         "swaps": processed_dir / "swap_events.parquet",
+        "liquidity": processed_dir / "liquidity_snapshots.parquet",
+        "mint_burns": processed_dir / "mint_burn_events.parquet",
         "positions": results_dir / "module4_lp_positions.parquet",
         "timeseries": results_dir / "module4_lp_timeseries.parquet",
         "figures": figures_dir,
@@ -553,6 +973,8 @@ def check_inputs(
     for label, path in [
         ("slot0 snapshots", paths["slot0"]),
         ("swap events", paths["swaps"]),
+        ("liquidity snapshots", paths["liquidity"]),
+        ("mint/burn events", paths["mint_burns"]),
     ]:
         _require(path, label)
         typer.echo(f"found {label}: {path} ({_row_count(path)} rows)")
@@ -570,10 +992,14 @@ def run_all(
     paths = _artifact_paths(processed_dir, results_dir, figures_dir)
     _require(paths["slot0"], "slot0 snapshots")
     _require(paths["swaps"], "swap events")
+    _require(paths["liquidity"], "liquidity snapshots")
+    _require(paths["mint_burns"], "mint/burn events")
 
     positions, timeseries = run_lp_analytics(
         slot0_path=paths["slot0"],
         swaps_path=paths["swaps"],
+        liquidity_path=paths["liquidity"],
+        mint_burns_path=paths["mint_burns"],
         positions_output_path=paths["positions"],
         timeseries_output_path=paths["timeseries"],
         figs_dir=paths["figures"],

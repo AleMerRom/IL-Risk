@@ -195,6 +195,30 @@ def validate_slot0_against_swaps(data_dir: Path, tolerance_bps: float = 1.0) -> 
     return pd.DataFrame(rows)
 
 
+def volume_crosscheck(data_dir: Path) -> pd.DataFrame:
+    """Aggregate decoded swaps by direction for the report volume cross-check."""
+
+    swaps = pd.read_parquet(
+        data_dir / "processed" / "swap_events.parquet",
+        columns=["trade_direction", "usd_notional", "amount0_usdc"],
+    )
+    by_dir = (
+        swaps.assign(abs_usdc=swaps["amount0_usdc"].abs())
+        .groupby("trade_direction", as_index=False)
+        .agg(swaps=("usd_notional", "size"), abs_usdc_notional=("abs_usdc", "sum"))
+    )
+    total = pd.DataFrame(
+        [
+            {
+                "trade_direction": "total",
+                "swaps": int(by_dir["swaps"].sum()),
+                "abs_usdc_notional": float(by_dir["abs_usdc_notional"].sum()),
+            }
+        ]
+    )
+    return pd.concat([by_dir, total], ignore_index=True)
+
+
 def validate_liquidity_ticks_against_rpc(
     data_dir: Path,
     rpc,
