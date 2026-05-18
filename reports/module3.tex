@@ -51,7 +51,7 @@ means WETH enters and USDC leaves.
 The simulator follows the native Uniswap V3 execution logic.  A swap is broken
 into local steps, each inside a tick interval where active liquidity is
 constant.  The implementation lives in
-\path{src/il_risk/uniswap_v3/swap_simulator.py}.  The core function,
+\path{src/module3/swap_simulator.py}.  The core function,
 \path{simulate_swap}, is deliberately in-memory: it receives one reconstructed
 liquidity map, the matching slot0 state, a direction, a USD notional, and the
 fee.  Parquet loading is handled only by a thin convenience wrapper, so the
