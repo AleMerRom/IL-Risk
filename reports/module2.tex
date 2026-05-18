@@ -20,9 +20,9 @@ as the high-volatility snapshot because it is the lowest ETH price and lowest TV
 
 These graphs show the liquidity distribution at around 20\% above and below the current price. If we showed the liquididty 
 distribution accross the entire price range, you cannot see the details. So we will use the graph with the price range for 
-the rest of the analysis, but the full range graph is in the Appendix~\ref{sec:appendix}.
+the rest of the analysis, but the full range graph \ref{fig:m2-full-range-profiles} is in the Appendix~\ref{sec:appendix}.
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_2/figures/fig_2_1_liquidity_profiles.png}
     \caption{Fig 2.1 --- Liquidity profiles around the current pool price for three snapshots. The red dashed line marks the current USDC/WETH price.}
@@ -35,14 +35,16 @@ and March, liquidity became much more concentrated around the realized trading r
 Figure~\ref{fig:m2-heatmaps} confirm this migration: late-sample liquidity is denser and closer to the current price path than 
 in October--December.
 
-These graphs show the liwuidity distribution for each snapshot, using the colour as concentration of liquidity, The white line
+These graphs show the liquidity distribution for each snapshot, using the colour as concentration of liquidity, The white line
 is the current price. It is a tiled time-series graph, as it shows the heatmap for each day, in monthly groups. We can see that 
 the liquidity distribution does migrate towards the current price, thanks to the change in colour of the dark sections at the top and 
 bottom of the graph. There is also a clean concentration of liquidity around 2000\$ in all the months. The persistent band around 
 \$2{,}000 appears to be a genuine liquidity concentration rather than a plotting artifact: it is present across multiple snapshots 
-and is consistent with the underlying initialized-tick liquidity data.
+and is consistent with the underlying initialized-tick liquidity data. This graph also shows the liquidity distribution between roughly 
+\$1500 and \$5000. So in the appendix, we show the full price distribution graph using a log price scale \ref{fig:m2-full-price-heatmaps} 
+in the appendix \ref{sec:appendix}
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_2/figures/fig_2_1b_monthly_price_heatmaps.png}
     \caption{Fig 2.1b --- Evolution of the liquidity profile across daily snapshots. Color intensity is active liquidity on a log scale; the white line is the current pool price.}
@@ -75,7 +77,7 @@ and value each position as
 \]
 Each position is then classified as in range, above the current USDC/WETH price range, or below it.
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_2/figures/fig_2_2_tvl_decomposition.png}
     \caption{Fig 2.2 --- TVL decomposition into in-range and out-of-range liquidity across all daily snapshots.}
@@ -109,7 +111,7 @@ We used the formula
 for $k\in\{0.1\%,0.5\%,1\%,2\%,5\%\}$.  Figure~\ref{fig:m2-ilr} plots all five
 series.
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_2/figures/fig_2_3_ilr_timeseries.png}
     \caption{Fig 2.3.A --- In-range liquidity ratio for symmetric price bands around the current pool price.}
@@ -144,7 +146,7 @@ We computed the L-HHI for each daily snapshot using the formula
 \]
 We overlay L-HHI with the ETH price in Figure~\ref{fig:m2-lhhi}.
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_2/figures/fig_2_3_lhhi_eth_price.png}
     \caption{Fig 2.3.B --- Liquidity HHI and ETH price.}

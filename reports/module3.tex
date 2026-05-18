@@ -210,7 +210,7 @@ size.  From the simulated trade grid, we compute the median, 10th percentile,
 and 90th percentile of price impact by direction and notional size.
 Figure~\ref{fig:fig32-price-impact} shows these curves on log-log axes.
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=0.95\linewidth]{../data/results/module_3/figures/module3_price_impact_curves.png}
     \caption{Fig 3.2 --- Simulated price impact by trade size. Solid lines show the median across daily snapshots; shaded areas show the 10th--90th percentile range.}
@@ -278,7 +278,7 @@ prevents the sample from being dominated by the most common small trades or by
 high-activity days, and block-level sampling avoids overweighting blocks that
 contain many swaps but only one previous-block mid price.
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=0.95\linewidth]{../data/results/module_3/figures/module3_effective_spread_by_size.png}
     \caption{Fig 3.3 --- Median observed effective spread by trade-size bucket compared with the simulated median price impact.}
