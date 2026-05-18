@@ -22,6 +22,7 @@ def main():
     
     ##TASK 2.1 PART B - LIQUIDITY PROFILE EVOLUTION ACROSS ALL DAILY SNAPSHOTS
     liquidity_profile_monthly_price_heatmaps(df, slot0)
+    #liquidity_profile_full_price_heatmap_annex(df, slot0)
     #liquidity_profile_timeseries(df, slot0)
     #liquidity_profile_monthly_multiples(df, slot0)
     #liquidity_profile_weekly_tiles(df, slot0)

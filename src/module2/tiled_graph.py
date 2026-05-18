@@ -11,6 +11,7 @@ FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_WINDOW = 0.20
 PROFILE_BINS = 100
 LIQUIDITY_SCALE = 1e18
+FULL_PRICE_QUANTILE_RANGE = (0.01, 0.99)
 
 ## TASK 2.1 PART B - LIQUIDITY PROFILE EVOLUTION ACROSS ALL DAILY SNAPSHOTS
 
@@ -247,6 +248,103 @@ def liquidity_profile_monthly_price_heatmaps(df, slot0, vmax_quantile=0.995):
         colorbar_label=f'Active Liquidity (L / 1e18, log scale, {vmax_quantile:.1%} cap)',
         output_path="fig_2_1b_monthly_price_heatmaps.png",
     )
+
+def liquidity_profile_full_price_heatmap_annex(df, slot0, vmax_quantile=0.995):
+    work = _profiles_with_absolute_price(df, slot0)
+    positive_prices = work.loc[work['price'] > 0, 'price']
+    lower_price = positive_prices.quantile(FULL_PRICE_QUANTILE_RANGE[0])
+    upper_price = positive_prices.quantile(FULL_PRICE_QUANTILE_RANGE[1])
+    work = work[
+        (work['price'] >= lower_price) &
+        (work['price'] <= upper_price)
+    ].copy()
+
+    log_edges = np.linspace(np.log10(lower_price), np.log10(upper_price), PROFILE_BINS + 1)
+    log_centers = (log_edges[:-1] + log_edges[1:]) / 2
+    work['log_price'] = np.log10(work['price'])
+    work['price_bin'] = pd.cut(
+        work['log_price'],
+        bins=log_edges,
+        labels=log_centers,
+        include_lowest=True,
+    )
+
+    raw_heatmaps = _monthly_heatmaps(work, log_centers)
+    scaled_heatmaps = {
+        month: (dates, heatmap / LIQUIDITY_SCALE)
+        for month, (dates, heatmap) in raw_heatmaps.items()
+    }
+
+    months = list(scaled_heatmaps.keys())
+    ncols = 3
+    nrows = int(np.ceil(len(months) / ncols))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(18, 9), sharey=True)
+    axes = np.atleast_1d(axes).flatten()
+    norm = _log_norm_for_heatmaps(scaled_heatmaps, vmax_quantile)
+    image = None
+
+    for i, (ax, month) in enumerate(zip(axes, months)):
+        dates, heatmap = scaled_heatmaps[month]
+        values = np.ma.masked_less_equal(heatmap.to_numpy(dtype=float).T, 0)
+        day_numbers = pd.to_datetime(dates).day.to_numpy()
+        image = ax.imshow(
+            values,
+            aspect='auto',
+            origin='lower',
+            extent=[
+                day_numbers.min() - 0.5,
+                day_numbers.max() + 0.5,
+                log_edges[0],
+                log_edges[-1],
+            ],
+            cmap='viridis',
+            norm=norm,
+        )
+
+        month_slot0 = (
+            slot0[slot0['date'].isin(dates)]
+            .set_index('date')
+            .reindex(dates)
+        )
+        line = ax.plot(
+            day_numbers,
+            np.log10(month_slot0['price_usdc_per_weth']),
+            color='white',
+            linewidth=1.4,
+            label='Current pool price',
+        )[0]
+        line.set_path_effects([
+            path_effects.Stroke(linewidth=2.4, foreground='black'),
+            path_effects.Normal(),
+        ])
+
+        ax.set_title(month)
+        ax.set_xticks(np.linspace(day_numbers.min(), day_numbers.max(), min(5, len(day_numbers))).astype(int))
+        ax.set_xlabel('Day of month')
+        if i % ncols == 0:
+            ax.set_ylabel('USDC per WETH, log scale')
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _pos: f'{10 ** y:,.0f}'))
+
+    for ax in axes[len(months):]:
+        ax.axis('off')
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.935), frameon=False)
+    q_low, q_high = FULL_PRICE_QUANTILE_RANGE
+    fig.suptitle(
+        f'Appendix: Monthly Liquidity Heatmaps Across the {q_low:.0%}-{q_high:.0%} Price Range',
+        y=0.98,
+    )
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.84, bottom=0.17, hspace=0.45, wspace=0.16)
+    cbar_ax = fig.add_axes([0.25, 0.06, 0.50, 0.02])
+    cbar = fig.colorbar(image, cax=cbar_ax, orientation='horizontal')
+    cbar.set_label(f'Active Liquidity (L / 1e18, log scale, {vmax_quantile:.1%} cap)')
+    plt.savefig(
+        FIGURE_DIR / "annex_fig_2_1b_full_price_monthly_heatmaps.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
 
 def liquidity_profile_monthly_multiples(df, slot0):
     work = _profiles_with_relative_price(df, slot0)
