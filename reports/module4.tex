@@ -19,7 +19,9 @@ This module studies the USDC/WETH Uniswap V3 pool from the liquidity provider (m
 \paragraph{Inputs used.}
 \begin{itemize}
     \item \texttt{slot0\_snapshots.parquet}: daily snapshot blocks with mid-price (USDC per WETH) and current tick.
-    \item \texttt{swap\_events.parquet}: per-swap amounts, tick after swap, and active liquidity used to compute fee shares.
+    \item \texttt{liquidity\_snapshots.parquet}: tick-level liquidity map at the first snapshot, used to initialize fee replay.
+    \item \texttt{mint\_burn\_events.parquet}: historical liquidity updates, replayed in log order to keep the liquidity map current.
+    \item \texttt{swap\_events.parquet}: per-swap token deltas and post-swap state, used to replay fee accrual interval by interval.
 \end{itemize}
 
 \subsection{Task 4.1 --- Representative LP Positions}
@@ -45,57 +47,133 @@ We define five synthetic positions, all entered at the first snapshot and exited
 \end{table}
 
 \paragraph{Liquidity sizing under the \$100{,}000 constraint.}
-Let the entry price be $p_0$ (USDC per WETH), with corresponding square-root price $\sqrt{p_0}$. For a range with bounds $(\sqrt{p_a}, \sqrt{p_b})$, Uniswap V3 virtual reserves for liquidity $L$ imply:
+To avoid ambiguity with the project brief's token notation, we use $C$ for USDC
+and $E$ for WETH throughout this module. Let the entry price be $p_0$ (USDC per
+WETH), with corresponding square-root price $\sqrt{p_0}$. For a range with
+bounds $(\sqrt{p_a}, \sqrt{p_b})$, Uniswap V3 virtual reserves for liquidity
+$L$ imply:
 \[
-x(L) =
+C(L) =
 \begin{cases}
 L\left(\frac{1}{\sqrt{p_a}} - \frac{1}{\sqrt{p_b}}\right), & \sqrt{p_0} \le \sqrt{p_a}, \\
 L\left(\frac{1}{\sqrt{p_0}} - \frac{1}{\sqrt{p_b}}\right), & \sqrt{p_a} < \sqrt{p_0} < \sqrt{p_b}, \\
 0, & \sqrt{p_0} \ge \sqrt{p_b},
 \end{cases}
-\qquad
-y(L) =
+\]
+and
+\[
+E(L) =
 \begin{cases}
 0, & \sqrt{p_0} \le \sqrt{p_a}, \\
 L(\sqrt{p_0} - \sqrt{p_a}), & \sqrt{p_a} < \sqrt{p_0} < \sqrt{p_b}, \\
 L(\sqrt{p_b} - \sqrt{p_a}), & \sqrt{p_0} \ge \sqrt{p_b},
 \end{cases}
 \]
-where $x$ is the amount of token0 (USDC) and $y$ is the amount of token1 (WETH). The entry portfolio value is $V_0(L) = x(L) + p_0\,y(L)$. We solve for $L$ via:
+where $C$ is the amount of token0 (USDC) and $E$ is the amount of token1
+(WETH). The entry portfolio value is $V_0(L) = C(L) + p_0\,E(L)$. We solve for
+$L$ via:
 \[
 L = \frac{100{,}000}{V_0(1)},
 \]
-and then compute initial deposits $(x_0, y_0)=(x(L), y(L))$.
+and then compute initial deposits $(C_0, E_0)=(C(L), E(L))$.
 
 \subsection{Task 4.2 --- Fee Income Computation}
 \label{subsec:m4-task42}
-Fees are computed from first principles by allocating each swap's total fee amount to the synthetic LP in proportion to its liquidity share, but only when the swap occurs while the pool tick is in the position range.
+The project brief describes the Uniswap V3 fee-accumulator mechanism. Since our
+LPs are synthetic and therefore have no historical \texttt{feeGrowthInside}
+state, we compute an interval-level counterfactual fee estimate that is
+equivalent to allocating each swap interval's fees by active liquidity share.
+Starting from the first daily liquidity snapshot, we replay historical events in
+log order, update tick liquidity with every Mint/Burn event, and split each Swap
+across both initialized pool ticks and synthetic LP range boundaries. This avoids
+treating a cross-range swap as if it occurred at only its final tick. The
+historical swap path is kept fixed, so this is a counterfactual fee allocation
+rather than a full re-simulation of market execution with the synthetic LP added.
 
-\paragraph{Per-swap fee in USD.}
-With fee rate $f=0.0005$, each swap contributes fees in both tokens; in USD terms:
-\[
-\mathrm{FeeUSD}_i = f\cdot \max(\Delta \mathrm{USDC}_i, 0) + f\cdot \max(\Delta \mathrm{WETH}_i, 0)\cdot p_i,
-\]
-where $p_i$ is the swap price (USDC per WETH) and the max() operator selects the token deposited into the pool on that swap.
+\paragraph{Relationship to the brief's prescribed formula.}
+The project brief prescribes allocating each swap's fees in proportion to
+$L_j/L_{\mathrm{active}}$, where $L_{\mathrm{active}}$ is the active liquidity
+recorded in the Swap event's \texttt{liquidity} field.  We deliberately deviate
+from this single-tick rule for two reasons.  First, the Swap event's
+\texttt{liquidity} field is the \emph{post-swap} active liquidity; for any swap
+that crosses one or more initialized ticks it does not describe the liquidity in
+force over the early part of the trade, so allocating the whole swap at that one
+value misattributes cross-tick flow.  Our interval-level replay instead charges
+each sub-interval at the liquidity actually active there.  Second, our LPs are
+synthetic and were never part of the historical pool, so a synthetic entrant of
+size $L_j$ would itself have diluted every other LP's share; we therefore place
+$L_j$ in the fee-growth denominator ($L_{\mathrm{pool}}+L_j$) rather than using
+the historical $L_{\mathrm{active}}$ unchanged.  Both choices make the estimate a
+more accurate counterfactual than the literal single-tick rule, at the cost of
+no longer matching the brief's formula verbatim.
 
-\paragraph{LP share and in-range filter.}
-For position $j$ with liquidity $L_j$, for swaps where $\mathrm{tick}_i \in [\mathrm{tick}^{(j)}_{\mathrm{lower}},\mathrm{tick}^{(j)}_{\mathrm{upper}})$, the USD fee attributed is:
+\paragraph{Interval fee growth.}
+With fee rate $f=0.0005$, each swap interval contributes fees in exactly one
+input token.  For interval $k$ of swap $i$, let
+$\Delta C^{+}_{i,k}$ be the USDC input amount and $\Delta E^{+}_{i,k}$ the WETH
+input amount, both in token units after splitting the swap path by tick
+interval.  The token fees paid to the pool are:
 \[
-\mathrm{FeeUSD}_{i,j} = \mathrm{FeeUSD}_i \cdot \frac{L_j}{\mathrm{ActiveLiquidity}_i}.
+F^{C}_{i,k}=f\,\Delta C^{+}_{i,k},
+\qquad
+F^{E}_{i,k}=f\,\Delta E^{+}_{i,k}.
 \]
-We aggregate fees between daily snapshot blocks and report both daily and cumulative fee income time series.
+The implementation then applies the fee-accumulator logic at interval level:
+fees are first expressed as token fee growth per unit active liquidity, and the
+synthetic LP's token fees are obtained by multiplying that growth by its
+liquidity.
+
+\paragraph{Synthetic LP fee growth.}
+For position $j$ with liquidity $L_j$, interval $k$ earns fees only if its tick
+is in $[\mathrm{tick}^{(j)}_{\mathrm{lower}},\mathrm{tick}^{(j)}_{\mathrm{upper}})$.
+Because the LP is synthetic, its liquidity is added to the fee-growth
+denominator. Each representative position is evaluated independently, so the
+denominator includes the historical pool liquidity plus that one synthetic LP,
+not all five synthetic LPs at once:
+\[
+\Delta g^{C}_{i,k,j}=\frac{F^{C}_{i,k}}{L_{\mathrm{pool},k}+L_j},
+\qquad
+\Delta g^{E}_{i,k,j}=\frac{F^{E}_{i,k}}{L_{\mathrm{pool},k}+L_j},
+\]
+and
+\[
+\mathrm{Fee}^{C}_{i,k,j}=L_j\,\Delta g^{C}_{i,k,j},
+\qquad
+\mathrm{Fee}^{E}_{i,k,j}=L_j\,\Delta g^{E}_{i,k,j}.
+\]
+We aggregate token fees between daily snapshot blocks and report cumulative
+USDC fees, cumulative WETH fees, and their USD value:
+\[
+\mathrm{FeeUSD}_j(t)=
+\sum_{i,k\le t}
+\left(
+\mathrm{Fee}^{C}_{i,k,j}
++p_{i,k}\,\mathrm{Fee}^{E}_{i,k,j}
+\right),
+\]
+where $p_{i,k}$ is the USDC/WETH price during the swap interval. This matches
+the code path that converts interval WETH fees to USD at the interval price
+before cumulating the USD fee series.  The brief converts token fees ``at the
+ETH price prevailing at the time of collection''; because a synthetic LP never
+issues a \texttt{Collect}, we instead price each WETH fee at the moment it
+accrues (the swap-interval price), which is the natural choice for continuous
+counterfactual accrual and coincides with collection-time pricing in the limit
+of frequent collection.
 
 \subsection{Task 4.3 --- Impermanent Loss and Net P\&L}
 \label{subsec:m4-task43}
 At each daily snapshot $t$ with ETH price $p_t$, we compute:
 \[
-V_{\mathrm{HODL}}(t) = x_0 + p_t\,y_0,
+V_{\mathrm{HODL}}(t) = C_0 + p_t\,E_0,
 \qquad
-V_{\mathrm{LP}}(t) = x_t + p_t\,y_t,
+V_{\mathrm{LP}}(t) = C_t + p_t\,E_t,
 \qquad
 \mathrm{IL}(t) = V_{\mathrm{HODL}}(t) - V_{\mathrm{LP}}(t),
 \]
-where $(x_t,y_t)$ are the Uniswap V3 virtual reserves implied by the fixed liquidity $L$ and the current price relative to the position range (below, within, or above). Finally, we report a net metric consistent with the project brief:
+where $(C_t,E_t)$ are the Uniswap V3 virtual reserves implied by the fixed
+liquidity $L$ and the current price relative to the position range (below,
+within, or above). Finally, we report a net metric consistent with the project
+brief:
 \[
 \mathrm{Net}(t) = \mathrm{CumulativeFees}(t) - \mathrm{IL}(t).
 \]
@@ -123,19 +201,80 @@ where $(x_t,y_t)$ are the Uniswap V3 virtual reserves implied by the fixed liqui
     \label{fig:m4-net}
 \end{figure}
 
+\paragraph{Final performance summary.}
+Table~\ref{tab:m4-summary} reports the end-of-window values on 31 March 2026.
+The pool price fell from \$4{,}145.56 per WETH at entry to \$2{,}024.66 at
+exit, so all concentrated LP positions ended above their upper WETH price
+range and were fully converted into WETH.  This explains why fee income is not
+enough to offset IL for P1--P4: the positions earn fees only while active, but
+the final mark-to-market loss relative to HODL remains large after the price
+move.
+
+\begin{table}[t]
+    \centering
+    \caption{Module 4 final LP performance by representative position.}
+    \label{tab:m4-summary}
+    \small
+    \begin{tabular}{lrrrrrr}
+        \hline
+        ID & In-range snaps. & Fee USDC & Fee WETH & Fees (\$) & IL (\$) & Fees $-$ IL (\$) \\
+        \hline
+        P1 & 1   & 4{,}228.21 & 1.0164 &  8{,}441.29 & 30{,}800.18 & -22{,}358.88 \\
+        P2 & 4   & 5{,}194.33 & 1.2573 & 10{,}403.54 & 26{,}934.79 & -16{,}531.25 \\
+        P3 & 5   & 4{,}159.86 & 1.0134 &  8{,}343.72 & 25{,}703.24 & -17{,}359.53 \\
+        P4 & 33  & 4{,}672.68 & 1.1717 &  9{,}372.37 & 25{,}379.44 & -16{,}007.07 \\
+        P5 & 182 & 1{,}227.68 & 0.4371 &  2{,}463.26 &  4{,}534.54 &  -2{,}071.28 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+The ``In-range snaps.'' column counts the daily midnight snapshots whose pool
+tick fell inside $[\mathrm{tick}_{\mathrm{lower}},\mathrm{tick}_{\mathrm{upper}})$.
+It is only a daily sampling of position state, not the fee-earning window: fees
+accrue continuously on the replayed intra-day swap path, so a narrow position
+such as P1 can earn substantial fees (\$8.4k) even though the price sat inside
+its band at only one midnight snapshot, because price crossed back and forth
+through the band intraday.
+
+The fee ranking illustrates the central trade-off in concentrated liquidity.
+P1 has the highest liquidity density when active, but the interval-level
+fee-growth replay shows that it is too narrow to capture much of the cross-range trading flow.
+It is active for only one daily snapshot and finishes with \$8.4k of fees. P2
+earns the most, about \$10.4k, because it still concentrates capital tightly
+while capturing more flow near the entry price. P3 and P4 spread capital over
+wider intervals; P4 is active for 33 days and therefore slightly out-earns P3,
+but both give up fee share per dollar relative to the narrower bands. P5 is
+active for the entire period but earns the least, because the full-range
+position is closest to passive V2-style liquidity and has the lowest fee share
+per dollar deposited.
+
+The IL profile moves in the opposite direction.  The narrow positions are
+shorter gamma around the initial price: when ETH sells off, they quickly become
+one-sided WETH positions and underperform the initial HODL basket.  Wider
+ranges soften this effect, but P2--P4 still finish with IL around
+\$25--27k.  The full-range P5 has much smaller IL, about \$4.5k, because it
+adjusts more gradually and never leaves the active range.  Net of fees, every
+representative position is negative over this window, but P5 loses the least.
+This is a useful bridge to Module 5: the LP payoff behaves like a short
+volatility exposure, and fee income is the compensation for bearing that
+rebalancing risk.
+
+\paragraph{Limitations.}
+The fee replay uses 80-digit decimal arithmetic and does not reproduce Uniswap
+V3's exact on-chain integer rounding (uint160 square-root prices and per-step
+truncation).  At the notionals and tick spacings in this pool the resulting
+error is negligible relative to the fee magnitudes reported, but the figures
+should be read as a high-precision counterfactual estimate rather than
+bit-exact on-chain accounting.  As noted above, the synthetic LP enters the
+fee-growth denominator but does not alter the historical swap path, so the
+numbers answer ``what would this position have earned and lost,'' not ``how
+would the market have executed differently had this LP been present.''
+
 \subsection{Module 4 Deliverables Checklist}
 \label{subsec:m4-checklist}
 \begin{itemize}
-    \item[\(\square\)] \textbf{D4.1} \texttt{lp\_analytics.py}: fee income, IL, and net P\&L for five synthetic positions.
-    \item[\(\square\)] \textbf{D4.2} Fig 4.1 cumulative fee income (all five positions).
-    \item[\(\square\)] \textbf{D4.3} Fig 4.2 impermanent loss (all five positions).
-    \item[\(\square\)] \textbf{D4.4} Fig 4.3 cumulative fee income minus IL (all five positions).
-\end{itemize}
-
-\subsection{Writing TODOs Before Submission}
-\label{subsec:m4-todos}
-\begin{itemize}
-    \item[\(\square\)] Add 1--2 paragraphs interpreting the ordering of fee income across widths (P1--P5) and linking it to time spent in-range.
-    \item[\(\square\)] Comment on IL magnitude across widths and relate to convex payoff/short-gamma intuition (bridges to Module 5).
-    \item[\(\square\)] Ensure all figures are self-contained (axis labels, units, legends).
+    \item[\(\checkmark\)] \textbf{D4.1} \texttt{lp\_analytics.py}: fee income, IL, and net P\&L for five synthetic positions.
+    \item[\(\checkmark\)] \textbf{D4.2} Fig 4.1 cumulative fee income (all five positions).
+    \item[\(\checkmark\)] \textbf{D4.3} Fig 4.2 impermanent loss (all five positions).
+    \item[\(\checkmark\)] \textbf{D4.4} Fig 4.3 cumulative fee income minus IL (all five positions).
 \end{itemize}

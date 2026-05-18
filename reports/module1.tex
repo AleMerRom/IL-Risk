@@ -14,8 +14,11 @@ be reconstructed from the full history of Mint and Burn events.
 All event data were extracted directly through Ethereum archive-node RPC calls.
 The extraction script resolves the study-window blocks from UTC timestamps,
 downloads raw pool logs, decodes them with the pool ABI, resolves timestamps once
-per unique block, and writes compact Parquet files.  The output data dictionary
-is included in the repository README.
+per unique block, and writes compact Parquet files.  All four required files are
+reproduced from scratch by a single documented entry point,
+\path{src/module1/data_extraction.py}, whose only inputs are an archive RPC
+endpoint URL and the pool address (\texttt{data\_extraction.py extract all}).
+The output data dictionary is included in the repository README.
 
 The main swap file, \path{swap_events.parquet}, contains 1,095,286 decoded swaps
 across 637,982 unique blocks.  The timestamp range is
@@ -50,7 +53,27 @@ swap has positive WETH flow into the pool.  The aggregate absolute USDC amount
 equals the reported USD notional total, \$21.39 billion, and the buy/sell
 notional split differs by less than 0.2\%.  This is consistent with the decoded
 trade direction convention and gives no evidence of missing sign flips or
-decimal-scaling errors.
+decimal-scaling errors.  Table~\ref{tab:m1-volume} reports the cross-check by
+direction; the buy/sell notional split differs by only 0.061\%, and the
+aggregate absolute USDC amount equals the reported USD notional total to the
+displayed precision.
+
+\begin{table}[t]
+    \centering
+    \small
+    \caption{Volume cross-check on \protect\path{swap_events.parquet} (1 Oct 2025 -- 31 Mar 2026).}
+    \label{tab:m1-volume}
+    \begin{tabular}{lrr}
+        \toprule
+        Direction & Swaps & Absolute USDC notional (USD bn) \\
+        \midrule
+        \path{buy_weth}  &   534{,}929 & 10.702 \\
+        \path{sell_weth} &   560{,}357 & 10.690 \\
+        \midrule
+        Total            & 1{,}095{,}286 & 21.392 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
 We also compare each daily slot0 price with the most recent decoded swap price
 at or before the snapshot block.  The validation table contains 181 comparable
@@ -60,6 +83,27 @@ only larger row is 11.71 bps on the 2026-02-05 snapshot, where the comparison
 swap is in the same block as the snapshot.  This appears to be a same-block
 ordering edge case in the diagnostic table rather than a systematic price
 conversion problem: the remaining comparisons are effectively exact.
+Table~\ref{tab:m1-slot0} summarizes the full check, saved to
+\path{data/results/module_1/slot0_swap_price_check.parquet}.
+
+\begin{table}[t]
+    \centering
+    \small
+    \caption{Daily slot0 price vs.\ last decoded swap price before the snapshot block.}
+    \label{tab:m1-slot0}
+    \begin{tabular}{lr}
+        \toprule
+        Statistic & Value \\
+        \midrule
+        Comparable snapshots                 & 181 \\
+        Within 1 bp tolerance                 & 180 \\
+        Median absolute difference (bps)      & 0.0000 \\
+        95th percentile absolute diff.\ (bps) & 0.0018 \\
+        Maximum absolute difference (bps)     & 11.71 \\
+        Snapshot of the maximum               & 2026-02-05 (same block) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
 Finally, the reconstructed liquidity map is checked against direct archive
 \path{pool.ticks()} calls.  At snapshot block 23,479,243, we sampled 10
@@ -68,3 +112,30 @@ contract at that same historical block.  Both \path{liquidityGross} and
 \path{liquidityNet} matched exactly for all 10 sampled ticks.  This confirms
 that replaying the Mint and Burn history reconstructs the on-chain tick state at
 the snapshot block, with no discrepancies found in the spot-check.
+Table~\ref{tab:m1-ticks} lists the sampled ticks; the persisted artifact
+\path{data/results/module_1/liquidity_tick_spot_check.parquet} contains the full
+reconstructed and on-chain values for both \path{liquidityGross} and
+\path{liquidityNet}, which are bit-for-bit equal for every sampled tick.
+
+\begin{table}[t]
+    \centering
+    \small
+    \caption{Reconstructed tick state vs.\ direct archive \protect\path{pool.ticks()} at block 23{,}479{,}243. Values shown to 4 significant figures; the persisted artifact stores exact integers and all rows match exactly on both \protect\path{liquidityGross} and \protect\path{liquidityNet}.}
+    \label{tab:m1-ticks}
+    \begin{tabular}{rrrc}
+        \toprule
+        Tick & $L_{\mathrm{gross}}$ & $L_{\mathrm{net}}$ & On-chain match \\
+        \midrule
+        $-887{,}270$ & $2.308{\times}10^{16}$ & $+2.308{\times}10^{16}$ & Yes \\
+        $-92{,}110$  & $3.983{\times}10^{11}$ & $+3.983{\times}10^{11}$ & Yes \\
+        $-76{,}280$  & $2.965{\times}10^{19}$ & $+2.965{\times}10^{19}$ & Yes \\
+        $-75{,}980$  & $2.965{\times}10^{19}$ & $-2.965{\times}10^{19}$ & Yes \\
+        $0$          & $1.357{\times}10^{13}$ & $+1.357{\times}10^{13}$ & Yes \\
+        $100$        & $100$                  & $+100$                  & Yes \\
+        $110$        & $100$                  & $-100$                  & Yes \\
+        $100{,}000$  & $1.357{\times}10^{13}$ & $-1.357{\times}10^{13}$ & Yes \\
+        $108{,}340$  & $2.267{\times}10^{9}$  & $+2.267{\times}10^{9}$  & Yes \\
+        $108{,}360$  & $2.274{\times}10^{9}$  & $+2.274{\times}10^{9}$  & Yes \\
+        \bottomrule
+    \end{tabular}
+\end{table}

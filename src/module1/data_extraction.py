@@ -324,7 +324,7 @@ def cmd_validate(data_dir: Path = typer.Option(Path("data"), "--data-dir")) -> N
 def cmd_validation_tables(data_dir: Path = typer.Option(Path("data"), "--data-dir")) -> None:
     """Write report-ready validation tables that do not require RPC."""
 
-    from module1.validate_module1 import validate_slot0_against_swaps
+    from module1.validate_module1 import validate_slot0_against_swaps, volume_crosscheck
 
     out_dir = MODULE1_RESULTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -332,6 +332,11 @@ def cmd_validation_tables(data_dir: Path = typer.Option(Path("data"), "--data-di
     path = out_dir / "slot0_swap_price_check.parquet"
     table.to_parquet(path, index=False)
     typer.echo(f"wrote {path} ({len(table)} rows)")
+
+    volume = volume_crosscheck(data_dir)
+    volume_path = out_dir / "volume_crosscheck.parquet"
+    volume.to_parquet(volume_path, index=False)
+    typer.echo(f"wrote {volume_path} ({len(volume)} rows)")
 
 
 @app.command("onchain-tick-check")
