@@ -299,6 +299,306 @@ def _make_oxarchive_client(api_key: str) -> Any:
     return _oxarchive.Client(api_key=api_key)
 
 
+def collect_perp_prices(
+    *,
+    coin: str = DEFAULT_COIN,
+    interval: str = DEFAULT_INTERVAL,
+    from_date: str = DEFAULT_START,
+    to_date: str = DEFAULT_END,
+    results_dir: Path = DEFAULT_RESULTS_DIR,
+    source: MarketDataSource = "auto",
+    api_url: str = DEFAULT_HYPERLIQUID_API_URL,
+    allium_api_key: str | None = None,
+    quicknode_api_key: str | None = None,
+    zeroxarchive_api_key: str | None = None,
+) -> pd.DataFrame:
+    """Collect hourly OHLCV candles and write ``perp_prices.parquet``."""
+
+    window = _collection_window(from_date, to_date)
+    if interval != "1h":
+        raise ValueError("Task 5.2 requires hourly candles; only interval='1h' is supported")
+
+    allium_api_key = allium_api_key or os.environ.get("ALLIUM_API_KEY")
+    quicknode_api_key = quicknode_api_key or os.environ.get("QUICKNODE_SQL_API_KEY")
+    zeroxarchive_api_key = zeroxarchive_api_key or _zeroxarchive_api_key_from_env()
+    # Allium asset contexts are reliable for funding/oracle joins but can have
+    # sparse hourly price-context coverage. In auto mode, prefer candle-native
+    # price sources and reserve Allium prices for explicit source='allium'.
+    use_allium = source == "allium"
+    use_zeroxarchive = source == "0xarchive" or (
+        source == "auto" and not use_allium and zeroxarchive_api_key
+    )
+    use_quicknode = source == "quicknode" or (
+        source == "auto" and not use_allium and not use_zeroxarchive and quicknode_api_key
+    )
+
+    if use_allium:
+        if not allium_api_key:
+            raise RuntimeError("source='allium' requires ALLIUM_API_KEY")
+        df = _collect_prices_allium(
+            AlliumExplorerClient(api_key=allium_api_key),
+            coin=coin,
+            window=window,
+        )
+        source_name = "allium_explorer"
+    elif use_quicknode:
+        if not quicknode_api_key:
+            raise RuntimeError("source='quicknode' requires QUICKNODE_SQL_API_KEY")
+        df = _collect_prices_quicknode(
+            QuickNodeSqlClient(api_key=quicknode_api_key),
+            coin=coin,
+            window=window,
+        )
+        source_name = "quicknode_sql"
+    elif use_zeroxarchive:
+        if not zeroxarchive_api_key:
+            raise RuntimeError("source='0xarchive' requires ZEROXARCHIVE_API_KEY")
+        df = _collect_prices_zeroxarchive(
+            _make_oxarchive_client(zeroxarchive_api_key),
+            coin=coin,
+            interval=interval,
+            window=window,
+        )
+        source_name = "0xarchive"
+    else:
+        df = _collect_prices_official(
+            HyperliquidInfoClient(api_url=api_url),
+            coin=coin,
+            interval=interval,
+            window=window,
+        )
+        source_name = "hyperliquid_info"
+
+    if "source" not in df.columns:
+        df["source"] = source_name
+    df = _normalise_prices(df, coin=coin, interval=interval, window=window)
+    _validate_hourly_coverage(df, window, time_column="open_time", label="perp_prices")
+    path = results_dir / "perp_prices.parquet"
+    _write_parquet(df, path)
+    _write_metadata(
+        path.with_suffix(".metadata.json"),
+        {
+            "coin": coin,
+            "interval": interval,
+            "from": from_date,
+            "to": to_date,
+            "source": source_name,
+            "rows": int(len(df)),
+        },
+    )
+    return df
+
+
+def _collect_prices_official(
+    client: HyperliquidInfoClient,
+    *,
+    coin: str,
+    interval: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    payload = {
+        "type": "candleSnapshot",
+        "req": {
+            "coin": coin,
+            "interval": interval,
+            "startTime": window.start_ms,
+            "endTime": window.end_ms,
+        },
+    }
+    rows = client.post_info(payload)
+    if not isinstance(rows, list):
+        raise RuntimeError(f"unexpected candleSnapshot response: {rows}")
+    return pd.DataFrame(rows)
+
+
+def _collect_prices_quicknode(
+    client: QuickNodeSqlClient,
+    *,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for start_ms, end_ms in _monthly_ms_windows(window):
+        sql = f"""
+        SELECT
+            coin,
+            hour,
+            toFloat64(open) AS open,
+            toFloat64(high) AS high,
+            toFloat64(low) AS low,
+            toFloat64(close) AS close,
+            toFloat64(volume) AS volume,
+            toUInt64(trade_count) AS num_trades
+        FROM hyperliquid_market_volume_hourly
+        WHERE coin = {_sql_string(coin)}
+          AND hour >= toDateTime({_sql_string(_sql_dt(start_ms))}, 'UTC')
+          AND hour <= toDateTime({_sql_string(_sql_dt(end_ms))}, 'UTC')
+        ORDER BY hour ASC
+        """
+        rows.extend(client.query(sql))
+    return pd.DataFrame(rows)
+
+
+def _collect_prices_allium(
+    client: AlliumExplorerClient,
+    *,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for start_ms, end_ms in _monthly_ms_windows(window):
+        sql = f"""
+        SELECT
+            coin,
+            date_trunc('hour', timestamp) AS hour,
+            argMin(mid_price, timestamp) AS open,
+            max(mid_price) AS high,
+            min(mid_price) AS low,
+            argMax(mid_price, timestamp) AS close,
+            0 AS volume,
+            0 AS num_trades
+        FROM hyperliquid.raw.perpetual_market_asset_contexts
+        WHERE coin = {_sql_string(coin)}
+          AND timestamp >= {_sql_string(_sql_dt(start_ms))}
+          AND timestamp <= {_sql_string(_sql_dt(end_ms))}
+          AND mid_price IS NOT NULL
+        GROUP BY coin, hour
+        ORDER BY hour ASC
+        """
+        rows.extend(
+            client.query(
+                sql,
+                title=f"IL Risk {coin} Allium hourly prices {_sql_dt(start_ms)}",
+            )
+        )
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["source"] = "allium_explorer"
+    return df
+
+
+def _collect_prices_zeroxarchive(
+    client: Any,
+    *,
+    coin: str,
+    interval: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    start_str = _ts_from_ms(window.start_ms).strftime("%Y-%m-%dT%H:%M:%S")
+    # Add 1 h so the SDK's exclusive end includes the final candle of the window.
+    end_str = (_ts_from_ms(window.end_ms) + pd.Timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+    candles = []
+    cursor = None
+    while True:
+        kwargs: dict[str, Any] = {"start": start_str, "end": end_str, "interval": interval}
+        if cursor is not None:
+            kwargs["cursor"] = cursor
+        resp = client.hyperliquid.candles.history(coin, **kwargs)
+        candles.extend(resp.data)
+        if resp.next_cursor is None:
+            break
+        cursor = resp.next_cursor
+
+    if not candles:
+        return pd.DataFrame()
+
+    rows = [
+        {
+            "coin": coin,
+            "hour": c.timestamp,
+            "open": float(c.open),
+            "high": float(c.high),
+            "low": float(c.low),
+            "close": float(c.close),
+            "volume": float(c.volume),
+            "num_trades": int(c.trade_count),
+            "source": "0xarchive",
+        }
+        for c in candles
+    ]
+    return pd.DataFrame(rows)
+
+
+def _normalise_prices(
+    df: pd.DataFrame,
+    *,
+    coin: str,
+    interval: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    if df.empty:
+        raise ValueError("no candle rows returned")
+
+    work = df.copy()
+    if "t" in work.columns:
+        work["open_time"] = _to_utc_timestamp(work["t"])
+        work["close_time"] = _to_utc_timestamp(work["T"])
+        work["coin"] = work.get("s", coin)
+        work["interval"] = work.get("i", interval)
+        rename = {"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume", "n": "num_trades"}
+        work = work.rename(columns=rename)
+    else:
+        work["open_time"] = pd.to_datetime(work["hour"], utc=True)
+        work["close_time"] = work["open_time"] + pd.Timedelta(hours=1) - pd.Timedelta(milliseconds=1)
+        work["interval"] = interval
+
+    for column in ["open", "high", "low", "close", "volume"]:
+        work[column] = pd.to_numeric(work[column], errors="raise").astype(float)
+    work["num_trades"] = pd.to_numeric(work.get("num_trades", 0), errors="coerce").fillna(0).astype("int64")
+    work["coin"] = work["coin"].fillna(coin).astype(str)
+    work["interval"] = work["interval"].fillna(interval).astype(str)
+    work["date"] = work["open_time"].dt.strftime("%Y-%m-%d")
+
+    out = work[
+        [
+            "coin",
+            "interval",
+            "open_time",
+            "close_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "num_trades",
+            "date",
+            "source",
+        ]
+    ].drop_duplicates(subset=["coin", "interval", "open_time"])
+    out = out[
+        (out["open_time"] >= _ts_from_ms(window.start_ms))
+        & (out["open_time"] <= _ts_from_ms(window.end_ms))
+    ].sort_values("open_time").reset_index(drop=True)
+
+    if (out[["open", "high", "low", "close"]] <= 0).any().any():
+        raise ValueError("perp_prices contains non-positive OHLC prices")
+    if (out["high"] < out[["open", "close", "low"]].max(axis=1)).any():
+        raise ValueError("perp_prices contains high below open/close/low")
+    if (out["low"] > out[["open", "close", "high"]].min(axis=1)).any():
+        raise ValueError("perp_prices contains low above open/close/high")
+    return out
+
+
+def _validate_hourly_coverage(
+    df: pd.DataFrame,
+    window: CollectionWindow,
+    *,
+    time_column: str,
+    label: str,
+) -> None:
+    start = _ts_from_ms(window.start_ms).floor("h")
+    end = _ts_from_ms(window.end_ms).floor("h")
+    expected = pd.date_range(start, end, freq="h", tz="UTC")
+    actual = pd.DatetimeIndex(df[time_column]).floor("h").drop_duplicates()
+    missing = expected.difference(actual)
+    if len(missing):
+        preview = ", ".join(ts.isoformat() for ts in missing[:5])
+        raise ValueError(
+            f"{label} missing {len(missing)} hourly rows over requested window; first gaps: {preview}. "
+            "Use a native historical provider with full coverage; do not substitute another venue."
+        )
+
+
 def _collection_window(from_date: str, to_date: str) -> CollectionWindow:
     start_day = _parse_date(from_date)
     end_day = _parse_date(to_date)
@@ -385,6 +685,31 @@ def _zeroxarchive_api_key_from_env() -> str | None:
         or os.environ.get("OXARCHIVE_API_KEY")
         or os.environ.get("OXA_API_KEY")
     )
+
+
+@app.command("collect-prices")
+def cmd_collect_prices(
+    from_date: str = typer.Option(DEFAULT_START, "--from"),
+    to_date: str = typer.Option(DEFAULT_END, "--to"),
+    coin: str = typer.Option(DEFAULT_COIN, "--coin"),
+    interval: str = typer.Option(DEFAULT_INTERVAL, "--interval"),
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),
+    source: str = typer.Option("auto", "--source", help="auto, allium, quicknode, 0xarchive, or official"),
+    api_url: str = typer.Option(DEFAULT_HYPERLIQUID_API_URL, "--api-url"),
+) -> None:
+    """Collect hourly ETH perp OHLCV candles."""
+
+    _setup_logging()
+    df = collect_perp_prices(
+        coin=coin,
+        interval=interval,
+        from_date=from_date,
+        to_date=to_date,
+        results_dir=results_dir,
+        source=_parse_source(source),
+        api_url=api_url,
+    )
+    typer.echo(f"wrote {results_dir / 'perp_prices.parquet'} ({len(df)} rows)")
 
 
 def _parse_source(value: str) -> MarketDataSource:
