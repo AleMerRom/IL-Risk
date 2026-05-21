@@ -1,0 +1,199 @@
+{
+  "realized_volatility": {
+    "hourly_log_return_std": 0.007360793646093929,
+    "annualized_from_hourly": 0.6889325365805424,
+    "large_move_abs_log_return_threshold": 0.015219294075206146,
+    "large_move_hour_count": 219
+  },
+  "conditional_funding": {
+    "normal_hours": {
+      "count": 4148,
+      "mean": 7.310997926711669e-06,
+      "sum": 0.0303260194
+    },
+    "large_move_hours": {
+      "count": 219,
+      "mean": 1.7125726027397266e-06,
+      "sum": 0.0003750534000000001
+    }
+  },
+  "hedging_cost_summary": [
+    {
+      "position_id": "P5",
+      "strategy_label": "band 0.05 ETH",
+      "cumulative_trading_fee_usd": 157.93114180561537,
+      "net_lp_plus_hedge_pnl_usd": -1247.3567885141529,
+      "residual_gamma_pnl_proxy_usd": -2444.197588039898
+    },
+    {
+      "position_id": "P2",
+      "strategy_label": "band 0.10 ETH",
+      "cumulative_trading_fee_usd": 993.7499340221901,
+      "net_lp_plus_hedge_pnl_usd": -11269.375440446733,
+      "residual_gamma_pnl_proxy_usd": -7722.597695798241
+    },
+    {
+      "position_id": "P3",
+      "strategy_label": "band 0.10 ETH",
+      "cumulative_trading_fee_usd": 753.4987432571619,
+      "net_lp_plus_hedge_pnl_usd": -8181.461367301476,
+      "residual_gamma_pnl_proxy_usd": -9520.848341404255
+    },
+    {
+      "position_id": "P3",
+      "strategy_label": "band 0.05 ETH",
+      "cumulative_trading_fee_usd": 753.7655444807266,
+      "net_lp_plus_hedge_pnl_usd": -8181.237567962977,
+      "residual_gamma_pnl_proxy_usd": -9520.848341404255
+    },
+    {
+      "position_id": "P3",
+      "strategy_label": "1h",
+      "cumulative_trading_fee_usd": 753.8188919525696,
+      "net_lp_plus_hedge_pnl_usd": -8181.356396923693,
+      "residual_gamma_pnl_proxy_usd": -9520.848341404255
+    },
+    {
+      "position_id": "P3",
+      "strategy_label": "24h",
+      "cumulative_trading_fee_usd": 235.8642005373617,
+      "net_lp_plus_hedge_pnl_usd": -12420.878981248134,
+      "residual_gamma_pnl_proxy_usd": -9520.848341404255
+    },
+    {
+      "position_id": "P2",
+      "strategy_label": "band 0.05 ETH",
+      "cumulative_trading_fee_usd": 993.945978640676,
+      "net_lp_plus_hedge_pnl_usd": -11265.256002016344,
+      "residual_gamma_pnl_proxy_usd": -7722.597695798241
+    },
+    {
+      "position_id": "P4",
+      "strategy_label": "1h",
+      "cumulative_trading_fee_usd": 853.9377011246124,
+      "net_lp_plus_hedge_pnl_usd": -8709.058790649011,
+      "residual_gamma_pnl_proxy_usd": -9844.755744335247
+    },
+    {
+      "position_id": "P4",
+      "strategy_label": "24h",
+      "cumulative_trading_fee_usd": 212.75777044561,
+      "net_lp_plus_hedge_pnl_usd": -10360.445155112357,
+      "residual_gamma_pnl_proxy_usd": -9844.755744335247
+    },
+    {
+      "position_id": "P4",
+      "strategy_label": "4h",
+      "cumulative_trading_fee_usd": 471.48878329649483,
+      "net_lp_plus_hedge_pnl_usd": -10401.82746682356,
+      "residual_gamma_pnl_proxy_usd": -9844.755744335247
+    },
+    {
+      "position_id": "P2",
+      "strategy_label": "4h",
+      "cumulative_trading_fee_usd": 527.612808251392,
+      "net_lp_plus_hedge_pnl_usd": -9776.879411140304,
+      "residual_gamma_pnl_proxy_usd": -7722.597695798241
+    },
+    {
+      "position_id": "P2",
+      "strategy_label": "1h",
+      "cumulative_trading_fee_usd": 993.945978640676,
+      "net_lp_plus_hedge_pnl_usd": -11265.256002016344,
+      "residual_gamma_pnl_proxy_usd": -7722.597695798241
+    },
+    {
+      "position_id": "P3",
+      "strategy_label": "4h",
+      "cumulative_trading_fee_usd": 435.31404104236134,
+      "net_lp_plus_hedge_pnl_usd": -10931.402761697544,
+      "residual_gamma_pnl_proxy_usd": -9520.848341404255
+    },
+    {
+      "position_id": "P4",
+      "strategy_label": "band 0.05 ETH",
+      "cumulative_trading_fee_usd": 851.7034071705434,
+      "net_lp_plus_hedge_pnl_usd": -8699.729895243712,
+      "residual_gamma_pnl_proxy_usd": -9844.755744335247
+    },
+    {
+      "position_id": "P1",
+      "strategy_label": "band 0.10 ETH",
+      "cumulative_trading_fee_usd": 966.7193186857746,
+      "net_lp_plus_hedge_pnl_usd": -13035.3652796643,
+      "residual_gamma_pnl_proxy_usd": -2495.9762931064406
+    },
+    {
+      "position_id": "P4",
+      "strategy_label": "band 0.10 ETH",
+      "cumulative_trading_fee_usd": 843.9701466243384,
+      "net_lp_plus_hedge_pnl_usd": -8711.688814914545,
+      "residual_gamma_pnl_proxy_usd": -9844.755744335247
+    },
+    {
+      "position_id": "P1",
+      "strategy_label": "band 0.05 ETH",
+      "cumulative_trading_fee_usd": 966.7193186857746,
+      "net_lp_plus_hedge_pnl_usd": -13035.3652796643,
+      "residual_gamma_pnl_proxy_usd": -2495.9762931064406
+    },
+    {
+      "position_id": "P5",
+      "strategy_label": "1h",
+      "cumulative_trading_fee_usd": 219.6537083367662,
+      "net_lp_plus_hedge_pnl_usd": -1319.297345467301,
+      "residual_gamma_pnl_proxy_usd": -2444.197588039898
+    },
+    {
+      "position_id": "P1",
+      "strategy_label": "24h",
+      "cumulative_trading_fee_usd": 247.63865404449024,
+      "net_lp_plus_hedge_pnl_usd": -11204.86421344387,
+      "residual_gamma_pnl_proxy_usd": -2495.9762931064406
+    },
+    {
+      "position_id": "P5",
+      "strategy_label": "4h",
+      "cumulative_trading_fee_usd": 126.60906537861861,
+      "net_lp_plus_hedge_pnl_usd": -1451.9624374578998,
+      "residual_gamma_pnl_proxy_usd": -2444.197588039898
+    },
+    {
+      "position_id": "P1",
+      "strategy_label": "4h",
+      "cumulative_trading_fee_usd": 516.6861714338955,
+      "net_lp_plus_hedge_pnl_usd": -9652.401425040145,
+      "residual_gamma_pnl_proxy_usd": -2495.9762931064406
+    },
+    {
+      "position_id": "P5",
+      "strategy_label": "24h",
+      "cumulative_trading_fee_usd": 67.13759994951126,
+      "net_lp_plus_hedge_pnl_usd": -1317.4336257301475,
+      "residual_gamma_pnl_proxy_usd": -2444.197588039898
+    },
+    {
+      "position_id": "P1",
+      "strategy_label": "1h",
+      "cumulative_trading_fee_usd": 966.7193186857746,
+      "net_lp_plus_hedge_pnl_usd": -13035.3652796643,
+      "residual_gamma_pnl_proxy_usd": -2495.9762931064406
+    },
+    {
+      "position_id": "P2",
+      "strategy_label": "24h",
+      "cumulative_trading_fee_usd": 262.60702301085496,
+      "net_lp_plus_hedge_pnl_usd": -11007.43474469195,
+      "residual_gamma_pnl_proxy_usd": -7722.597695798241
+    },
+    {
+      "position_id": "P5",
+      "strategy_label": "band 0.10 ETH",
+      "cumulative_trading_fee_usd": 120.30726572086918,
+      "net_lp_plus_hedge_pnl_usd": -1260.9328291910097,
+      "residual_gamma_pnl_proxy_usd": -2444.197588039898
+    }
+  ],
+  "lvr_note": "residual_gamma_pnl_proxy_usd approximates LVR-style convexity loss with 0.5 * gamma * dP^2 between hedge updates; it is diagnostic, not a full arbitrage-flow LVR estimator.",
+  "options_overlay_note": "P1 and P2 are the natural ETH options-overlay candidates because their gamma magnitude is highest per dollar of LP notional."
+}

@@ -10,9 +10,27 @@
 \usepackage{float}
 \usepackage{hyperref}
 
+% Breakable monospace for long hex strings (e.g.\ Ethereum addresses).
+\urlstyle{tt}
+\makeatletter
+\g@addto@macro{\UrlBreaks}{%
+  \do\0\do\1\do\2\do\3\do\4\do\5\do\6\do\7\do\8\do\9\do\a\do\b\do\c\do\d\do\e\do\f
+  \do\A\do\B\do\C\do\D\do\E\do\F\do\x}
+\makeatother
+\newcommand{\ethaddr}[1]{\nolinkurl{#1}}
+
+% Formatted numbers in module .tex files (\num from siunitx).
+\newcommand{\num}[1]{#1}
+
 \title{Final Project Report\\Financial Applications of Blockchains and Distributed Ledgers}
-\author{%
-    % TODO: Add team members (names + SCIPER).
+\author{
+    \begin{tabular}{c}
+        Alexander Havlin\quad 414 444 \\
+        Alejandro Meredith Romero \\
+        Ricardo Perello Mas\quad 357 241 \\
+        Paul Louis Robert Quesnot\quad 342 572 \\
+        Mateus Vital Nabholz\quad 356 522 \\
+    \end{tabular}
 }
 \date{\today}
 
@@ -24,10 +42,42 @@
 
 \section{Introduction}
 \label{sec:introduction}
-% TODO: Briefly introduce AMMs and Uniswap V3.
-% TODO: State project objective and the pool under study.
-% TODO: Describe report structure across Modules 1--5.
-% Keep this section concise (roughly 1 page or less).
+
+Automated market makers (AMMs) have become a central venue for on-chain liquidity.
+Unlike centralised limit-order books, where active market makers compete on quotes,
+AMMs rely on passive liquidity deposited by users across price ranges.
+Uniswap~V3 extends this model with \emph{concentrated liquidity}: each liquidity provider (LP)
+chooses a tick interval and earns fees only while the pool price remains inside that range.
+Execution quality for takers and the risk--return profile for LPs therefore depend not only on
+how much capital is in the pool, but on \emph{where} that capital sits relative to the current price.
+
+This report presents a six-month empirical study of one of the deepest on-chain USDC/WETH venues.
+All analysis targets the Uniswap~V3 pool at contract
+\ethaddr{0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640} (0.05\% fee tier, tick spacing~10)
+on Ethereum mainnet, with token0 USDC (6 decimals) and token1 WETH (18 decimals).
+The swap study window runs from \date{1st October 2025} to \date{31st March 2026}; liquidity-changing events are
+replayed from deployment so that daily pool states can be reconstructed consistently.
+The overarching objective is to link the liquidity distribution of this pool to
+taker execution costs and LP economics, and to assess whether impermanent loss (IL)
+can be mitigated with a delta hedge on Hyperliquid ETH perpetual futures.
+Data are extracted directly from an Ethereum archive node via RPC; off-chain hedge inputs come
+from the Hyperliquid API. The accompanying codebase reproduces every table and figure from
+documented scripts.
+
+The project follows the required five-module structure.
+Module~1 builds and validates the on-chain dataset: swap, Mint/Burn, and Collect logs,
+daily \texttt{slot0} prices, and tick-level liquidity maps.
+Module~2 characterises how liquidity is distributed across prices and how that landscape
+evolves, including TVL decomposition and concentration metrics (in-range liquidity ratio and
+liquidity Herfindahl Hirschman index).
+Module~3 implements a Uniswap~V3 swap simulator on each daily snapshot, maps price impact
+over trade size, and compares simulated costs with effective spreads from observed swaps.
+Module~4 shifts to the LP side: five synthetic \$100{,}000 positions with different range
+widths, with fee income, impermanent loss, and net P\&L decomposed over the window.
+Module~5 treats the LP payoff as a short-gamma exposure, derives delta and gamma
+analytically, and backtests discrete delta hedging with hourly Hyperliquid perp and funding data.
+The remainder of the report is organised accordingly; an appendix provides supplementary
+liquidity-profile figures over the full price range.
 
 \input{module1.tex}
 \input{module2.tex}
@@ -37,9 +87,50 @@
 
 \section{Conclusion}
 \label{sec:conclusion}
-% TODO: Synthesize the main empirical findings across modules.
-% TODO: Highlight practical implications for takers and LPs.
-% TODO: Briefly note key limitations and possible extensions.
+
+This report reconstructs the Uniswap V3 USDC/WETH 0.05\% pool over the period from 
+\date{1st of October 2025} to \date{31st of March 2026} and uses that reconstruction 
+to connect three quantities that are often studied separately: the location of liquidity, taker 
+execution cost, and liquidity-provider performance. The dataset covers more than one million swaps, 
+roughly \$21.4 billion in USDC notional, hundreds of thousands of liquidity-changing events, and 182 daily 
+pool-state snapshots. The validation checks against slot0 prices and sampled on-chain tick states give 
+confidence that the reconstructed pool state is accurate enough for the downstream empirical analysis.
+
+The central result is that liquidity depth is spatial, not merely aggregate. As ETH fell from roughly 
+\$4,150 to \$2,025, liquidity migrated toward the realised trading range, with a persistent depth band 
+around \$2,000. The \(\pm 5\%\) in-range liquidity ratio rose from 5.0\% to 36.1\%, while the global 
+liquidity HHI remained only weakly correlated with price. This distinction matters: TVL measures how 
+much capital is deposited in the pool, but execution quality depends on whether that capital is close to 
+the marginal price.
+
+The taker-side analysis makes this mechanism visible. Against reconstructed daily pool states, small trades 
+remain close to the 5 bps fee floor, while \$1M trades face median simulated price impact of about 102 bps 
+and much larger state-dependent dispersion. Observed effective spreads follow the same increasing pattern 
+with trade size, but they also reflect routing, within-block ordering, MEV, and strategic order splitting. 
+The simulator should therefore be interpreted as a clean measure of single-pool mechanical depth, not as a 
+complete model of realised execution.
+
+For liquidity providers, the same concentration mechanism creates a sharp inventory-risk trade-off. Narrow 
+ranges earn more fees per dollar while active, but they become more exposed to large directional moves and 
+to the short-gamma profile of concentrated liquidity. Across the five representative \$100,000 positions, 
+cumulative fees did not offset impermanent loss while every position ended with negative net P\&L. The 
+full-range position earned the least in fees but lost the least overall, while concentrated positions earned 
+more fees yet suffered materially larger IL. Delta hedging with ETH perpetuals reduced residual exposure 
+but did not restore profitability, because discrete hedges leave gamma risk, incur trading costs, and receive 
+the least funding support during large-move periods.
+
+Several limitations bound these conclusions. The swap simulator uses daily snapshots and abstracts from gas, 
+multi-hop routing, private order flow, and same-block strategic behaviour. The observed effective-spread 
+comparison is based on a stratified block sample rather than every swap block.The LP analysis is counterfactual: 
+synthetic liquidity is included in the fee denominator, but the historical swap path is held fixed. The hedging 
+backtest also uses simplified trading costs and discrete rebalancing. These choices make the results interpretable and 
+reproducible, but not a full equilibrium model of how the pool would have evolved under different liquidity provision.
+
+Overall, the study shows that concentrated liquidity cannot be evaluated by TVL alone. During this window, liquidity 
+migration improved nearby execution for takers as the market moved lower, but LPs positioned around the prior price 
+regime were not compensated enough for the resulting directional and short-gamma exposure. For takers, concentrated 
+liquidity can make execution cheap when capital follows the price; for LPs, the same mechanism turns liquidity 
+provision into a path-dependent volatility-selling strategy whose fees may be insufficient in trending markets.
 
 \appendix
 \section{Appendix}
@@ -48,7 +139,7 @@
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_2/figures/annex_fig_2_1_full_price_liquidity_profiles.png}
-    \caption{Fig 2.1 ---Full price-range liquidity profiles for the Module 2 representative snapshots.}
+    \caption{Fig 2.1 --- Full price-range liquidity profiles for the Module 2 representative snapshots.}
     \label{fig:m2-full-range-profiles}
 \end{figure}
 

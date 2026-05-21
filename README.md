@@ -112,6 +112,66 @@ The Module 4 workflow lives in `src/module4/lp_analytics.py`.
 PYTHONPATH=src python src/module4/lp_analytics.py run-all
 ```
 
+## Module 5 Hyperliquid data collection
+The Module 5 market-data collector lives in `src/module5/hyperliquid_collector.py`.
+It writes:
+
+- `data/results/module_5/perp_prices.parquet`
+- `data/results/module_5/funding_rates.parquet`
+- `data/results/module_5/figures/module5_funding_environment.png`
+
+Full-window collection can run in `auto` mode. In the current configuration,
+that uses 0xArchive for complete Hyperliquid hourly candles and 0xArchive plus
+Allium for native oracle/mark/mid coverage:
+
+```bash
+export ZEROXARCHIVE_API_KEY=<your-0xarchive-key>
+export ALLIUM_API_KEY=<your-allium-key>
+PYTHONPATH=src python src/module5/hyperliquid_collector.py collect-all --source auto
+```
+
+Current status: this generates 4,368 hourly price rows, 4,368 funding rows with
+complete native oracle prices, and the funding-environment figure. The collector
+intentionally does not fall back to Binance, candle-close oracle proxies,
+interpolated oracle values, or any other approximation.
+
+QuickNode SQL Explorer is still supported explicitly, but the configured local
+key returned HTTP 403 because SQL Explorer is not enabled on the current plan:
+
+```bash
+export QUICKNODE_SQL_API_KEY=<your-key>
+PYTHONPATH=src python src/module5/hyperliquid_collector.py collect-all --source quicknode
+```
+
+0xArchive is also supported as an explicit native historical source:
+
+```bash
+export ZEROXARCHIVE_API_KEY=<your-key>
+PYTHONPATH=src python src/module5/hyperliquid_collector.py collect-all --source 0xarchive
+```
+
+The collector also accepts `ZEROARCHIVE_API_KEY`, `OXARCHIVE_API_KEY`, and `OXA_API_KEY`
+for compatibility with existing local env files and the 0xArchive CLI/MCP docs.
+
+0xArchive probe status: `candles/ETH` returns the full 4,368-hour study window, and
+`funding/ETH` returns all 4,368 hourly funding rows. However, `prices/ETH` is missing
+18 hourly oracle/mark/mid rows on 2026-01-19 00:00-17:00 UTC. In `auto` mode,
+those 18 native oracle rows are filled from Allium
+`hyperliquid.raw.perpetual_market_asset_contexts`.
+
+The official Hyperliquid public `/info` API is supported for no-key collection where its history
+coverage is sufficient, but it has two important limitations:
+
+```bash
+PYTHONPATH=src python src/module5/hyperliquid_collector.py collect-prices --source official
+PYTHONPATH=src python src/module5/hyperliquid_collector.py collect-funding --source official
+```
+
+For the default 2025-10-01 to 2026-03-31 study window, the collector validates hourly coverage
+and will fail if the selected source cannot cover every hour. The official `fundingHistory`
+endpoint also does not expose oracle prices, so `collect-funding --source official` fails for
+Task 5.2 rather than approximating oracle prices from candle closes.
+
 ## Data dictionary
 
 ### `swap_events.parquet`
