@@ -261,6 +261,87 @@ def write_hedge_results(results: pd.DataFrame, *, results_dir: Path = DEFAULT_RE
     return path
 
 
+def plot_monte_carlo_hedge_results(
+    results: pd.DataFrame,
+    *,
+    figures_dir: Path,
+) -> Path:
+    """Plot cumulative net LP plus hedge P&L by position and rebalance schedule."""
+
+    if results.empty:
+        raise ValueError("results cannot be empty")
+
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    output_path = figures_dir / "module5_monte_carlo_hedge_pnl.png"
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    final_rows = results.sort_values("timestamp").groupby(
+        ["position_id", "rebalance_hours"], as_index=False
+    ).tail(1)
+    labels = {
+        (str(row["position_id"]), int(row["rebalance_hours"])):
+        f"{row['position_id']} / {int(row['rebalance_hours'])}h"
+        for row in final_rows.to_dict("records")
+    }
+    for (position_id, rebalance_hours), group in results.groupby(
+        ["position_id", "rebalance_hours"], sort=True
+    ):
+        group = group.sort_values("timestamp")
+        ax.plot(
+            group["timestamp"],
+            group["net_lp_plus_hedge_pnl_usd"],
+            linewidth=1.5,
+            label=labels[(str(position_id), int(rebalance_hours))],
+        )
+
+    ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.45)
+    ax.set_title("Module 5 Monte Carlo LP Hedge Backtest")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Net LP plus hedge P&L (USD)")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax.grid(True, alpha=0.22, linestyle="--")
+    ax.legend(fontsize=8, ncol=3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def plot_hedge_results(results: pd.DataFrame, *, figures_dir: Path) -> Path:
+    """Plot analytical hedge P&L by position and rebalance frequency."""
+
+    if results.empty:
+        raise ValueError("results cannot be empty")
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    output_path = figures_dir / "module5_hedge_results.png"
+    fixed = results[results["strategy"] == "fixed"].copy()
+    if fixed.empty:
+        fixed = results.copy()
+    positions = list(fixed["position_id"].drop_duplicates())
+    fig, axes = plt.subplots(len(positions), 1, figsize=(11, 2.35 * len(positions)), sharex=True)
+    axes_arr = np.atleast_1d(axes)
+    for ax, position_id in zip(axes_arr, positions):
+        group = fixed[fixed["position_id"] == position_id]
+        for label, strategy_frame in group.groupby("strategy_label", sort=True):
+            ax.plot(
+                strategy_frame["timestamp"],
+                strategy_frame["net_lp_plus_hedge_pnl_usd"],
+                linewidth=1.6,
+                label=label,
+            )
+        ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+        ax.set_ylabel(str(position_id))
+        ax.grid(True, alpha=0.22, linestyle="--")
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+        ax.legend(fontsize=8, ncol=3, framealpha=0.9)
+    axes_arr[-1].set_xlabel("Time")
+    fig.suptitle("LP Plus Perp Delta-Hedge P&L by Rebalance Frequency", y=0.995)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
 def compute_optional_research_extensions(
     results: pd.DataFrame,
     market: pd.DataFrame,
@@ -664,6 +745,7 @@ def cmd_run_monte_carlo(
     annual_drift: float = typer.Option(DEFAULT_ANNUAL_DRIFT, "--annual-drift"),
     trading_fee_rate: float = typer.Option(DEFAULT_TRADING_FEE_RATE, "--trading-fee-rate"),
     seed: int = typer.Option(5_003, "--seed"),
+    plot: bool = typer.Option(True, "--plot/--no-plot"),
 ) -> None:
     """Run the Monte Carlo expected-delta hedge backtest."""
 
@@ -681,6 +763,12 @@ def cmd_run_monte_carlo(
     results = run_monte_carlo_hedge_backtest(prices, funding, positions, config=config)
     results_path = write_hedge_results(results, results_dir=results_dir)
     typer.echo(f"wrote {results_path} ({len(results)} rows)")
+    if plot:
+        figure_path = plot_monte_carlo_hedge_results(
+            results,
+            figures_dir=results_dir / "figures",
+        )
+        typer.echo(f"wrote {figure_path}")
 
 
 @app.command("run")
@@ -720,6 +808,7 @@ def cmd_run(
     results_dir.mkdir(parents=True, exist_ok=True)
     results_path = results_dir / "hedge_results.parquet"
     results.to_parquet(results_path, index=False)
+    figure_path = plot_hedge_results(results, figures_dir=results_dir / "figures")
     research = compute_optional_research_extensions(
         results,
         _prepare_market_data(prices, funding),
@@ -727,6 +816,7 @@ def cmd_run(
     research_path = results_dir / "optional_research_extensions.json"
     research_path.write_text(json.dumps(research, indent=2, default=str), encoding="utf-8")
     typer.echo(f"wrote {results_path} ({len(results)} rows)")
+    typer.echo(f"wrote {figure_path}")
     typer.echo(f"wrote {research_path}")
 
 
