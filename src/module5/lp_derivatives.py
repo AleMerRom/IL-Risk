@@ -1,4 +1,4 @@
-"""Module 5 Task 5.1.2 — analytic LP delta.
+"""Module 5 Task 5.1.2-5.1.3 - analytic LP delta and gamma.
 
 The pool is USDC/WETH, with human price ``p`` quoted as USDC per WETH.
 Following the Module 4 code, the Uniswap raw square-root price is
@@ -11,8 +11,8 @@ For liquidity ``L`` over ``[sqrt_lower, sqrt_upper]``, the LP value is:
     below range, low ETH price:   V_LP = p * WETH-only amount
     in range:                    V_LP = amount0(p) + p * amount1(p)
 
-Taking the derivative with respect to the human ETH price ``p`` gives delta
-in WETH units.
+Taking derivatives with respect to the human ETH price ``p`` gives delta in
+WETH units and gamma in WETH per USDC.
 """
 
 from __future__ import annotations
@@ -92,6 +92,39 @@ def lp_delta(
     return _maybe_scalar(delta, price_usdc_per_weth)
 
 
+def lp_gamma(
+    price_usdc_per_weth: float | np.ndarray | pd.Series,
+    liquidity_raw: float,
+    sqrt_lower: float,
+    sqrt_upper: float,
+) -> float | np.ndarray:
+    """Analytic ``d^2 V_LP / dp^2`` for a Uniswap V3 LP position.
+
+    Gamma is zero outside the active range. In range,
+
+        gamma = d/dp [L(s(p) - sl) / 1e18]
+              = -L * s(p) / (2 * p * 1e18).
+
+    Thus active LP positions are short gamma, with larger magnitude for more
+    concentrated positions because their ``liquidity_raw`` is larger for the
+    same notional capital.
+    """
+
+    _validate_inputs(liquidity_raw, sqrt_lower, sqrt_upper)
+    prices = _as_float_array(price_usdc_per_weth)
+    if np.any(prices <= 0):
+        raise ValueError("price_usdc_per_weth must be positive")
+
+    sqrt_prices = np.sqrt(RAW_PRICE_SCALE / prices)
+    in_range = (sqrt_prices > sqrt_lower) & (sqrt_prices < sqrt_upper)
+
+    gamma = np.zeros_like(prices, dtype=float)
+    gamma[in_range] = -liquidity_raw * sqrt_prices[in_range] / (
+        2.0 * prices[in_range] * WETH_RAW_SCALE
+    )
+    return _maybe_scalar(gamma, price_usdc_per_weth)
+
+
 def lp_delta_from_ticks(
     price_usdc_per_weth: float | np.ndarray | pd.Series,
     liquidity_raw: float,
@@ -108,11 +141,27 @@ def lp_delta_from_ticks(
     )
 
 
+def lp_gamma_from_ticks(
+    price_usdc_per_weth: float | np.ndarray | pd.Series,
+    liquidity_raw: float,
+    tick_lower: int,
+    tick_upper: int,
+) -> float | np.ndarray:
+    """Convenience wrapper computing LP gamma from Uniswap tick bounds."""
+
+    return lp_gamma(
+        price_usdc_per_weth,
+        liquidity_raw,
+        sqrt_raw_price_at_tick(tick_lower),
+        sqrt_raw_price_at_tick(tick_upper),
+    )
+
+
 def compute_position_derivatives(
     prices_usdc_per_weth: float | np.ndarray | pd.Series,
     position: pd.Series | dict,
 ) -> pd.DataFrame:
-    """Return price and delta for one Module 4 LP position row."""
+    """Return price, delta, and gamma for one Module 4 LP position row."""
 
     price_array = _as_float_array(prices_usdc_per_weth)
     liquidity = float(position["liquidity_raw"])
@@ -123,6 +172,9 @@ def compute_position_derivatives(
         {
             "price_usdc_per_weth": price_array,
             "lp_delta_weth": lp_delta_from_ticks(price_array, liquidity, tick_lower, tick_upper),
+            "lp_gamma_weth_per_usdc": lp_gamma_from_ticks(
+                price_array, liquidity, tick_lower, tick_upper
+            ),
         }
     )
 
@@ -142,13 +194,13 @@ def compute_all_position_derivatives(
     return pd.concat(frames, ignore_index=True)
 
 
-def plot_delta_curves(
+def plot_delta_gamma_curves(
     positions: pd.DataFrame,
     *,
     figures_dir: Path,
     n_points: int = N_PRICE_POINTS,
-) -> Path:
-    """Plot Module 5 Task 5.1.2 delta curves for P1-P5."""
+) -> tuple[Path, Path]:
+    """Plot Module 5 Task 5.1.2-5.1.3 delta and gamma curves for P1-P5."""
 
     p0 = float(positions["entry_price_usdc_per_weth"].iloc[0])
     prices = np.linspace(0.5 * p0, 1.5 * p0, n_points)
@@ -156,6 +208,7 @@ def plot_delta_curves(
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     delta_path = figures_dir / "module5_lp_delta.png"
+    gamma_path = figures_dir / "module5_lp_gamma.png"
 
     fig, ax = plt.subplots(figsize=(11, 6))
     for i, (position_id, group) in enumerate(curves.groupby("position_id", sort=True)):
@@ -178,7 +231,29 @@ def plot_delta_curves(
     fig.savefig(delta_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    return delta_path
+    fig, ax = plt.subplots(figsize=(11, 6))
+    for i, (position_id, group) in enumerate(curves.groupby("position_id", sort=True)):
+        label = f"{position_id} ({group['price_range_label'].iloc[0]})"
+        ax.plot(
+            group["price_usdc_per_weth"],
+            group["lp_gamma_weth_per_usdc"],
+            color=_COLORS[i % len(_COLORS)],
+            linewidth=2.0,
+            label=label,
+        )
+    ax.axvline(p0, color="dimgray", linestyle=":", linewidth=1.4, label=f"$p_0$ = {p0:,.0f}")
+    ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.55)
+    ax.set_xlabel("ETH price (USDC / WETH)")
+    ax.set_ylabel("LP gamma (WETH per USDC)")
+    ax.set_title("Analytical LP Gamma by Position")
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+    ax.grid(True, alpha=0.22, linestyle="--")
+    ax.legend(fontsize=9, framealpha=0.92)
+    fig.tight_layout()
+    fig.savefig(gamma_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return delta_path, gamma_path
 
 
 @app.command()
@@ -188,11 +263,12 @@ def run(
     ),
     figures_dir: Path = typer.Option(DEFAULT_FIGURES_DIR, help="Output figure directory"),
 ) -> None:
-    """Plot LP delta curves for the representative positions."""
+    """Plot LP delta and gamma curves for the representative positions."""
 
     positions = pd.read_parquet(positions_path)
-    delta_path = plot_delta_curves(positions, figures_dir=figures_dir)
+    delta_path, gamma_path = plot_delta_gamma_curves(positions, figures_dir=figures_dir)
     print(f"Saved: {delta_path}")
+    print(f"Saved: {gamma_path}")
 
 
 def _validate_inputs(liquidity_raw: float, sqrt_lower: float, sqrt_upper: float) -> None:
