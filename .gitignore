@@ -10,6 +10,17 @@ data/**/*.sqlite-shm
 data/**/*.sqlite-wal
 
 reports/out/
+reports/*.aux
+reports/*.fls
+reports/*.fdb_latexmk
+reports/*.log
+reports/*.pdf
+
+## Agent / session files
+.claude/
+TODO.old.md
+DOCS.md
+TODO.md
 
 ## Local environment
 .env
