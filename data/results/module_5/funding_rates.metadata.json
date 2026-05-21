@@ -1,0 +1,9 @@
+{
+  "coin": "ETH",
+  "from": "2025-10-01",
+  "oracle_price_source": "0xarchive_allium",
+  "rows": 4368,
+  "sign_convention": "funding_pnl_short = position_size_ETH * oracle_price * funding_rate; positive funding_rate means short receives funding",
+  "source": "0xarchive_allium",
+  "to": "2026-03-31"
+}

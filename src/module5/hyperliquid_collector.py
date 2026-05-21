@@ -389,6 +389,111 @@ def collect_perp_prices(
     return df
 
 
+def collect_funding_rates(
+    *,
+    coin: str = DEFAULT_COIN,
+    from_date: str = DEFAULT_START,
+    to_date: str = DEFAULT_END,
+    results_dir: Path = DEFAULT_RESULTS_DIR,
+    source: MarketDataSource = "auto",
+    api_url: str = DEFAULT_HYPERLIQUID_API_URL,
+    allium_api_key: str | None = None,
+    quicknode_api_key: str | None = None,
+    zeroxarchive_api_key: str | None = None,
+) -> pd.DataFrame:
+    """Collect hourly funding rates and write ``funding_rates.parquet``.
+
+    The official Hyperliquid ``fundingHistory`` endpoint does not include
+    oracle prices.  Use ``source='quicknode'`` when Task 5.2 requires the
+    native oracle price for funding P&L.
+    """
+
+    window = _collection_window(from_date, to_date)
+    allium_api_key = allium_api_key or os.environ.get("ALLIUM_API_KEY")
+    quicknode_api_key = quicknode_api_key or os.environ.get("QUICKNODE_SQL_API_KEY")
+    zeroxarchive_api_key = zeroxarchive_api_key or _zeroxarchive_api_key_from_env()
+    use_hybrid = source == "auto" and allium_api_key and zeroxarchive_api_key
+    use_allium = source == "allium" or (source == "auto" and allium_api_key and not use_hybrid)
+    use_quicknode = source == "quicknode" or (
+        source == "auto" and not use_hybrid and not use_allium and quicknode_api_key
+    )
+    use_zeroxarchive = source == "0xarchive" or (
+        source == "auto" and not use_hybrid and not use_allium and not use_quicknode and zeroxarchive_api_key
+    )
+
+    if use_hybrid:
+        df = _collect_funding_zeroxarchive_allium(
+            zeroxarchive_client=_make_oxarchive_client(zeroxarchive_api_key),
+            allium_client=AlliumExplorerClient(api_key=allium_api_key),
+            coin=coin,
+            window=window,
+        )
+        source_name = "0xarchive_allium"
+    elif use_allium:
+        if not allium_api_key:
+            raise RuntimeError("source='allium' requires ALLIUM_API_KEY")
+        df = _collect_funding_allium(
+            AlliumExplorerClient(api_key=allium_api_key),
+            coin=coin,
+            window=window,
+        )
+        source_name = "allium_explorer"
+    elif use_quicknode:
+        if not quicknode_api_key:
+            raise RuntimeError("source='quicknode' requires QUICKNODE_SQL_API_KEY")
+        df = _collect_funding_quicknode(
+            QuickNodeSqlClient(api_key=quicknode_api_key),
+            coin=coin,
+            window=window,
+        )
+        source_name = "quicknode_sql"
+    elif use_zeroxarchive:
+        if not zeroxarchive_api_key:
+            raise RuntimeError("source='0xarchive' requires ZEROXARCHIVE_API_KEY")
+        df = _collect_funding_zeroxarchive(
+            _make_oxarchive_client(zeroxarchive_api_key),
+            coin=coin,
+            window=window,
+        )
+        source_name = "0xarchive"
+    else:
+        df = _collect_funding_official(
+            HyperliquidInfoClient(api_url=api_url),
+            coin=coin,
+            window=window,
+        )
+        source_name = "hyperliquid_info"
+
+    df["source"] = source_name
+    df = _normalise_funding(df, coin=coin, window=window)
+
+    _validate_hourly_coverage(df, window, time_column="funding_time", label="funding_rates")
+    _validate_oracle_coverage(df, source_name=source_name)
+    path = results_dir / "funding_rates.parquet"
+    _write_parquet(df, path)
+    oracle_source = (
+        source_name
+        if use_hybrid or use_allium or use_quicknode or use_zeroxarchive
+        else "unavailable"
+    )
+    _write_metadata(
+        path.with_suffix(".metadata.json"),
+        {
+            "coin": coin,
+            "from": from_date,
+            "to": to_date,
+            "source": source_name,
+            "oracle_price_source": oracle_source,
+            "rows": int(len(df)),
+            "sign_convention": (
+                "funding_pnl_short = position_size_ETH * oracle_price * funding_rate; "
+                "positive funding_rate means short receives funding"
+            ),
+        },
+    )
+    return df
+
+
 def _collect_prices_official(
     client: HyperliquidInfoClient,
     *,
@@ -408,6 +513,37 @@ def _collect_prices_official(
     rows = client.post_info(payload)
     if not isinstance(rows, list):
         raise RuntimeError(f"unexpected candleSnapshot response: {rows}")
+    return pd.DataFrame(rows)
+
+
+def _collect_funding_official(
+    client: HyperliquidInfoClient,
+    *,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    start_ms = window.start_ms
+    while start_ms <= window.end_ms:
+        payload = {
+            "type": "fundingHistory",
+            "coin": coin,
+            "startTime": start_ms,
+            "endTime": window.end_ms,
+        }
+        page = client.post_info(payload)
+        if not isinstance(page, list):
+            raise RuntimeError(f"unexpected fundingHistory response: {page}")
+        if not page:
+            break
+        rows.extend(page)
+        last_time = int(page[-1]["time"])
+        next_start = last_time + 1
+        if next_start <= start_ms:
+            raise RuntimeError("fundingHistory pagination did not advance")
+        start_ms = next_start
+        if len(page) < MAX_OFFICIAL_PAGE_ROWS:
+            break
     return pd.DataFrame(rows)
 
 
@@ -519,6 +655,208 @@ def _collect_prices_zeroxarchive(
     return pd.DataFrame(rows)
 
 
+def _collect_funding_quicknode(
+    client: QuickNodeSqlClient,
+    *,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    # The official funding endpoint gives the settled hourly funding record.
+    # QuickNode is used here to attach the corresponding hourly oracle price,
+    # which Task 5.2 needs for short-position funding P&L.
+    funding = _collect_funding_official(
+        HyperliquidInfoClient(),
+        coin=coin,
+        window=window,
+    )
+    oracle_rows: list[dict[str, Any]] = []
+    for start_ms, end_ms in _monthly_ms_windows(window):
+        sql = f"""
+        SELECT
+            coin,
+            toStartOfHour(polled_at) AS hour,
+            avg(toFloat64(oracle_px)) AS oracle_price,
+            avg(toFloat64(mark_px)) AS mark_price,
+            avg(toFloat64(mid_px)) AS mid_price
+        FROM hyperliquid_perpetual_market_contexts
+        WHERE coin = {_sql_string(coin)}
+          AND polled_at >= toDateTime({_sql_string(_sql_dt(start_ms))}, 'UTC')
+          AND polled_at <= toDateTime({_sql_string(_sql_dt(end_ms))}, 'UTC')
+        GROUP BY coin, hour
+        ORDER BY hour ASC
+        """
+        oracle_rows.extend(client.query(sql))
+    oracle = pd.DataFrame(oracle_rows)
+    if funding.empty:
+        return funding
+    funding["funding_hour"] = _to_utc_timestamp(funding["time"]).dt.floor("h")
+    if not oracle.empty:
+        oracle["funding_hour"] = pd.to_datetime(oracle["hour"], utc=True)
+        funding = funding.merge(
+            oracle[["funding_hour", "oracle_price", "mark_price", "mid_price"]],
+            on="funding_hour",
+            how="left",
+            validate="many_to_one",
+        )
+    return funding.drop(columns=["funding_hour"])
+
+
+def _collect_funding_allium(
+    client: AlliumExplorerClient,
+    *,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    # Use official settled funding rates, then attach hourly native Allium
+    # oracle/mark/mid context from Hyperliquid asset contexts.
+    funding = _collect_funding_official(HyperliquidInfoClient(), coin=coin, window=window)
+    if funding.empty:
+        return funding
+
+    oracle_rows: list[dict[str, Any]] = []
+    for start_ms, end_ms in _monthly_ms_windows(window):
+        sql = f"""
+        SELECT
+            coin,
+            date_trunc('hour', timestamp) AS hour,
+            avg(oracle_price) AS oracle_price,
+            avg(mark_price) AS mark_price,
+            avg(mid_price) AS mid_price
+        FROM hyperliquid.raw.perpetual_market_asset_contexts
+        WHERE coin = {_sql_string(coin)}
+          AND timestamp >= {_sql_string(_sql_dt(start_ms))}
+          AND timestamp <= {_sql_string(_sql_dt(end_ms))}
+          AND oracle_price IS NOT NULL
+        GROUP BY coin, hour
+        ORDER BY hour ASC
+        """
+        oracle_rows.extend(
+            client.query(
+                sql,
+                title=f"IL Risk {coin} Allium hourly oracle {_sql_dt(start_ms)}",
+            )
+        )
+
+    oracle = pd.DataFrame(oracle_rows)
+    funding["funding_hour"] = _to_utc_timestamp(funding["time"]).dt.floor("h")
+    if not oracle.empty:
+        oracle["funding_hour"] = pd.to_datetime(oracle["hour"], utc=True).dt.floor("h")
+        funding = funding.merge(
+            oracle[["funding_hour", "oracle_price", "mark_price", "mid_price"]],
+            on="funding_hour",
+            how="left",
+            validate="many_to_one",
+        )
+    funding["source"] = "allium_explorer"
+    return funding.drop(columns=["funding_hour"])
+
+
+def _collect_funding_zeroxarchive_allium(
+    *,
+    zeroxarchive_client: Any,
+    allium_client: AlliumExplorerClient,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    funding = _collect_funding_zeroxarchive(zeroxarchive_client, coin=coin, window=window)
+    missing_before = int(funding["oracle_price"].isna().sum()) if "oracle_price" in funding else len(funding)
+    if missing_before == 0:
+        funding["source"] = "0xarchive"
+        return funding
+
+    allium = _collect_funding_allium(allium_client, coin=coin, window=window)
+    allium_fill = allium[["time", "oracle_price", "mark_price", "mid_price"]].copy()
+    allium_fill["funding_hour"] = _to_utc_timestamp(allium_fill["time"]).dt.floor("h")
+    allium_fill = allium_fill.drop(columns=["time"]).rename(
+        columns={
+            "oracle_price": "allium_oracle_price",
+            "mark_price": "allium_mark_price",
+            "mid_price": "allium_mid_price",
+        }
+    )
+    funding["funding_hour"] = _to_utc_timestamp(funding["time"]).dt.floor("h")
+    funding = funding.merge(allium_fill, on="funding_hour", how="left", validate="many_to_one")
+    for base, fill in [
+        ("oracle_price", "allium_oracle_price"),
+        ("mark_price", "allium_mark_price"),
+        ("mid_price", "allium_mid_price"),
+    ]:
+        if base not in funding:
+            funding[base] = pd.NA
+        funding[base] = funding[base].fillna(funding[fill])
+    missing_after = int(funding["oracle_price"].isna().sum())
+    log.info(
+        "filled %d of %d missing 0xArchive oracle rows from Allium",
+        missing_before - missing_after,
+        missing_before,
+    )
+    funding["source"] = "0xarchive_allium"
+    return funding.drop(
+        columns=[
+            "funding_hour",
+            "allium_oracle_price",
+            "allium_mark_price",
+            "allium_mid_price",
+        ]
+    )
+
+
+def _collect_funding_zeroxarchive(
+    client: Any,
+    *,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    # Use official Hyperliquid fundingHistory for settled rates (complete 4 368-row coverage).
+    funding = _collect_funding_official(HyperliquidInfoClient(), coin=coin, window=window)
+    if funding.empty:
+        return funding
+
+    # Fetch hourly-averaged oracle/mark prices from 0xArchive.
+    start_str = _ts_from_ms(window.start_ms).strftime("%Y-%m-%dT%H:%M:%S")
+    end_str = (_ts_from_ms(window.end_ms) + pd.Timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+    price_snapshots = []
+    cursor = None
+    while True:
+        kwargs: dict[str, Any] = {"start": start_str, "end": end_str, "interval": "1h"}
+        if cursor is not None:
+            kwargs["cursor"] = cursor
+        resp = client.hyperliquid.get_price_history(coin, **kwargs)
+        price_snapshots.extend(resp.data)
+        if resp.next_cursor is None:
+            break
+        cursor = resp.next_cursor
+
+    if price_snapshots:
+        oracle_df = pd.DataFrame(
+            [
+                {
+                    "funding_hour": p.timestamp,
+                    "oracle_price": float(p.oracle_price),
+                    "mark_price": float(p.mark_price),
+                    "mid_price": float(p.mid_price),
+                }
+                for p in price_snapshots
+            ]
+        )
+        oracle_df["funding_hour"] = pd.to_datetime(oracle_df["funding_hour"], utc=True).dt.floor("h")
+        funding["funding_hour"] = _to_utc_timestamp(funding["time"]).dt.floor("h")
+        funding = funding.merge(oracle_df, on="funding_hour", how="left", validate="many_to_one")
+        funding = funding.drop(columns=["funding_hour"])
+
+        missing = int(funding["oracle_price"].isna().sum())
+        if missing:
+            log.warning(
+                "0xArchive oracle_price missing for %d of %d funding rows; "
+                "leaving gaps for a native secondary source.",
+                missing,
+                len(funding),
+            )
+
+    funding["source"] = "0xarchive"
+    return funding
+
+
 def _normalise_prices(
     df: pd.DataFrame,
     *,
@@ -579,6 +917,50 @@ def _normalise_prices(
     return out
 
 
+def _normalise_funding(
+    df: pd.DataFrame,
+    *,
+    coin: str,
+    window: CollectionWindow,
+) -> pd.DataFrame:
+    if df.empty:
+        raise ValueError("no funding rows returned")
+    work = df.copy()
+    work["funding_time"] = _to_utc_timestamp(work["time"])
+    work["funding_rate"] = pd.to_numeric(work["fundingRate"], errors="raise").astype(float)
+    work["premium"] = pd.to_numeric(work.get("premium"), errors="coerce").astype(float)
+    work["coin"] = work["coin"].fillna(coin).astype(str)
+    if "oracle_price" not in work:
+        work["oracle_price"] = pd.NA
+    if "mark_price" not in work:
+        work["mark_price"] = pd.NA
+    if "mid_price" not in work:
+        work["mid_price"] = pd.NA
+    for column in ["oracle_price", "mark_price", "mid_price"]:
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+    work["date"] = work["funding_time"].dt.strftime("%Y-%m-%d")
+    out = work[
+        [
+            "coin",
+            "funding_time",
+            "funding_rate",
+            "premium",
+            "oracle_price",
+            "mark_price",
+            "mid_price",
+            "date",
+            "source",
+        ]
+    ].drop_duplicates(subset=["coin", "funding_time"])
+    out = out[
+        (out["funding_time"] >= _ts_from_ms(window.start_ms))
+        & (out["funding_time"] <= _ts_from_ms(window.end_ms))
+    ].sort_values("funding_time").reset_index(drop=True)
+    if out["funding_rate"].abs().gt(0.04).any():
+        raise ValueError("funding_rates contains absolute hourly funding rate above Hyperliquid cap")
+    return out
+
+
 def _validate_hourly_coverage(
     df: pd.DataFrame,
     window: CollectionWindow,
@@ -596,6 +978,16 @@ def _validate_hourly_coverage(
         raise ValueError(
             f"{label} missing {len(missing)} hourly rows over requested window; first gaps: {preview}. "
             "Use a native historical provider with full coverage; do not substitute another venue."
+        )
+
+
+def _validate_oracle_coverage(df: pd.DataFrame, *, source_name: str) -> None:
+    missing = int(df["oracle_price"].isna().sum())
+    if missing:
+        raise ValueError(
+            f"funding_rates missing oracle_price for {missing} rows from {source_name}. "
+            "Use a native Hyperliquid historical source with full oracle_px coverage, "
+            "or leave the dataset ungenerated."
         )
 
 
@@ -710,6 +1102,29 @@ def cmd_collect_prices(
         api_url=api_url,
     )
     typer.echo(f"wrote {results_dir / 'perp_prices.parquet'} ({len(df)} rows)")
+
+
+@app.command("collect-funding")
+def cmd_collect_funding(
+    from_date: str = typer.Option(DEFAULT_START, "--from"),
+    to_date: str = typer.Option(DEFAULT_END, "--to"),
+    coin: str = typer.Option(DEFAULT_COIN, "--coin"),
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),
+    source: str = typer.Option("auto", "--source", help="auto, allium, quicknode, 0xarchive, or official"),
+    api_url: str = typer.Option(DEFAULT_HYPERLIQUID_API_URL, "--api-url"),
+) -> None:
+    """Collect hourly ETH perp funding rates."""
+
+    _setup_logging()
+    df = collect_funding_rates(
+        coin=coin,
+        from_date=from_date,
+        to_date=to_date,
+        results_dir=results_dir,
+        source=_parse_source(source),
+        api_url=api_url,
+    )
+    typer.echo(f"wrote {results_dir / 'funding_rates.parquet'} ({len(df)} rows)")
 
 
 def _parse_source(value: str) -> MarketDataSource:
