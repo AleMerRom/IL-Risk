@@ -31,6 +31,8 @@ from datetime import date, datetime, time, timedelta, timezone
 import logging
 import os
 from pathlib import Path
+import shutil
+import tempfile
 import time as time_module
 from typing import Any, Literal
 
@@ -39,6 +41,10 @@ try:
 except ImportError:  # pragma: no cover
     _oxarchive = None  # type: ignore[assignment]
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -492,6 +498,69 @@ def collect_funding_rates(
         },
     )
     return df
+
+
+def plot_funding_environment(
+    *,
+    prices: pd.DataFrame,
+    funding: pd.DataFrame,
+    figures_dir: Path,
+) -> Path:
+    """Plot hourly funding rate, cumulative funding, and ETH mark price."""
+
+    merged = pd.merge_asof(
+        funding.sort_values("funding_time"),
+        prices[["open_time", "close"]].sort_values("open_time"),
+        left_on="funding_time",
+        right_on="open_time",
+        direction="nearest",
+        tolerance=pd.Timedelta("1h"),
+    )
+    if merged["close"].isna().any():
+        raise ValueError("could not align all funding rows with hourly ETH close prices")
+    merged["cumulative_funding_rate"] = merged["funding_rate"].cumsum()
+
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    output_path = figures_dir / "module5_funding_environment.png"
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    ax1.plot(
+        merged["funding_time"],
+        merged["funding_rate"] * 10_000,
+        color="#0f766e",
+        linewidth=0.8,
+        label="Hourly funding rate (bp)",
+    )
+    ax1.plot(
+        merged["funding_time"],
+        merged["cumulative_funding_rate"] * 10_000,
+        color="#7c2d12",
+        linewidth=1.6,
+        label="Cumulative funding (bp)",
+    )
+    ax1.axhline(0, color="black", linewidth=0.8, alpha=0.5)
+    ax1.set_ylabel("Funding rate (basis points)")
+    ax1.set_xlabel("UTC time")
+
+    ax2 = ax1.twinx()
+    ax2.plot(
+        merged["funding_time"],
+        merged["close"],
+        color="#1d4ed8",
+        linewidth=1.2,
+        alpha=0.55,
+        label="ETH perp close",
+    )
+    ax2.set_ylabel("ETH price (USDC)")
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+    ax1.set_title("Hyperliquid ETH Perp Funding Environment for a Short Hedger")
+    ax1.grid(True, alpha=0.25, linestyle="--")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
 
 
 def _collect_prices_official(
@@ -1125,6 +1194,64 @@ def cmd_collect_funding(
         api_url=api_url,
     )
     typer.echo(f"wrote {results_dir / 'funding_rates.parquet'} ({len(df)} rows)")
+
+
+@app.command("collect-all")
+def cmd_collect_all(
+    from_date: str = typer.Option(DEFAULT_START, "--from"),
+    to_date: str = typer.Option(DEFAULT_END, "--to"),
+    coin: str = typer.Option(DEFAULT_COIN, "--coin"),
+    interval: str = typer.Option(DEFAULT_INTERVAL, "--interval"),
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),
+    source: str = typer.Option("auto", "--source", help="auto, allium, quicknode, 0xarchive, or official"),
+    api_url: str = typer.Option(DEFAULT_HYPERLIQUID_API_URL, "--api-url"),
+) -> None:
+    """Collect Task 5.2 prices, funding, and funding-environment figure."""
+
+    _setup_logging()
+    parsed_source = _parse_source(source)
+    with tempfile.TemporaryDirectory(prefix="module5_collect_all_") as tmp_dir:
+        staging_dir = Path(tmp_dir)
+        prices = collect_perp_prices(
+            coin=coin,
+            interval=interval,
+            from_date=from_date,
+            to_date=to_date,
+            results_dir=staging_dir,
+            source=parsed_source,
+            api_url=api_url,
+        )
+        funding = collect_funding_rates(
+            coin=coin,
+            from_date=from_date,
+            to_date=to_date,
+            results_dir=staging_dir,
+            source=parsed_source,
+            api_url=api_url,
+        )
+        fig = plot_funding_environment(
+            prices=prices,
+            funding=funding,
+            figures_dir=staging_dir / "figures",
+        )
+        _publish_collect_all_outputs(staging_dir, results_dir)
+    typer.echo(f"wrote {results_dir / 'perp_prices.parquet'} ({len(prices)} rows)")
+    typer.echo(f"wrote {results_dir / 'funding_rates.parquet'} ({len(funding)} rows)")
+    typer.echo(f"wrote {results_dir / fig.relative_to(staging_dir)}")
+
+
+def _publish_collect_all_outputs(staging_dir: Path, results_dir: Path) -> None:
+    for relative_path in [
+        Path("perp_prices.parquet"),
+        Path("perp_prices.metadata.json"),
+        Path("funding_rates.parquet"),
+        Path("funding_rates.metadata.json"),
+        Path("figures/module5_funding_environment.png"),
+    ]:
+        source_path = staging_dir / relative_path
+        target_path = results_dir / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source_path), str(target_path))
 
 
 def _parse_source(value: str) -> MarketDataSource:
