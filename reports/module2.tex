@@ -41,7 +41,12 @@ representing the current price. It is a tiled time-series graph, as it shows the
 can notice the migration of the liquidity distribution towards the current price, thanks to the change in colour of the dark sections at the top and 
 bottom of the graph. There is also a clear concentration of liquidity around 2000\$ throughout our sample. The persistent band around 
 \$2{,}000 appears to be a genuine liquidity concentration rather than a plotting artifact: it is present across multiple snapshots 
-and is consistent with the underlying initialized-tick liquidity data. This graph also shows the liquidity distribution between roughly 
+and is consistent with the underlying initialized-tick liquidity data. 
+The persistent liquidity band around \$2,000 likely reflects passive range-order liquidity: while out of range it earns no fees, but 
+it sits as USDC ready to buy WETH if price falls into that level. This is consistent with LPs treating \$2,000 as a major support/accumulation 
+zone rather than continuously active market-making liquidity.
+
+This graph also shows the liquidity distribution between roughly 
 \$1,500 and \$5,000. In the appendix, the full price distribution graph using a Figure \ref{fig:m2-full-price-heatmaps} in Appendix \ref{sec:appendix} shows the same distribution on a log price scale.
 
 \begin{figure}[H]
@@ -88,7 +93,7 @@ Average TVL over the sample is \$71.8 million, with a minimum of \$54.6 million 
 million on the \date{16th of March 2026}.  The composition changes sharply over time.  On the \date{1st of October 2025}, only 28.5\% of TVL was in range, 
 while 64.6\% was below range.  On the \date{6th of February 2026}, in-range TVL was still only 30.9\%, with 68.8\% above range. 
 By the \date{31st of March 2026}, however, 91.8\% of TVL was in range.  This is due to 2 main reasons: 
-the price decline into February and March meant that the positions around 2000\$ mentioned in the previous section became in range, and some migration that followed the price decline. 
+the price decline into February and March meant that the positions around \$2,000 mentioned in the previous section became in range, and some migration that followed the price decline. 
 The TVL composition is consistent with the liquidity profile visualizations in Figure~\ref{fig:m2-profiles} and the heatmaps in 
 Figure~\ref{fig:m2-heatmaps}, which show a clear migration of liquidity towards the current price over time.
 
@@ -123,7 +128,7 @@ substantially over the sample.  The 5\% ILR averaged 12.9\%, but rose from
 5.0\% on the \date{1st of October 2025} to 36.1\% on the \date{31st of March 2026}. The 1\% ILR rose from
 1.14\% to 7.85\% over the same dates.  This supports the visual evidence that
 liquidity became more tightly centered around the realized trading range in
-February and March.
+February and March due to the price declining into the \$2000 price band..
 
 \subsubsection{Metric B ---Liquidity Herfindahl-Hirschman Index (L-HHI)}
 \label{subsubsec:lhhi}
@@ -157,4 +162,4 @@ The average L-HHI is 0.171, with a minimum of 0.126 and a maximum of 0.499. Unli
 mechanically with the ETH price: the correlation between price and L-HHI is only 0.12, because the L-HHI 
 measures concentration across initialized ticks globally, whereas ILR measures how much liquidity is close to 
 the current price.  Together, the two metrics show that late-sample execution liquidity improved mainly because 
-LPs moved liquidity toward the current price, not because the entire tick distribution became uniform.
+the current price migrated toward the existing \$2000 liquidity band, and some of the LPs moved liquidity with it.
