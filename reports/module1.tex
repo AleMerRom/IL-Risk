@@ -1,61 +1,59 @@
 \section{Module 1 --- On-Chain Data Extraction}
 \label{sec:module1}
 
-Module 1 builds the raw on-chain data layer used by all later analysis.  The
-pool is the Uniswap V3 USDC/WETH 0.05\% pool at
-\path{0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640}.  The swap study window is
-1 October 2025 through 31 March 2026, while liquidity-changing events are read
-from the pool deployment block, 12,376,729, so that the opening liquidity map can
+Module 1 builds the raw on-chain data layer used by all later analysis on the pool mentioned in the introduction.  The swap study window is from 
+the \date{1st of October 2025} to the \date{31st of March 2026}, while liquidity-changing events are read from
+the pool deployment block, 12,376,729, so that the opening liquidity map can
 be reconstructed from the full history of Mint and Burn events.
 
 \subsection{Extracted Files}
 \label{subsec:m1-files}
 
-All event data were extracted directly through Ethereum archive-node RPC calls.
-The extraction script resolves the study-window blocks from UTC timestamps,
-downloads raw pool logs, decodes them with the pool ABI, resolves timestamps once
-per unique block, and writes compact Parquet files.  All four required files are
+All event data was extracted directly using Ethereum archive-node RPC calls, with 
+the dedicated extraction script resolving the study-window blocks from UTC timestamps,
+downloading raw pool logs, decoding them with the pool ABI, resolving timestamps once
+per unique block, and writing them to compact Parquet files.  All four required files are
 reproduced from scratch by a single documented entry point,
-\path{src/module1/data_extraction.py}, whose only inputs are an archive RPC
-endpoint URL and the pool address (\texttt{data\_extraction.py extract all}).
-The output data dictionary is included in the repository README.
+\path{src/module1/data_extraction.py}, which takes as inputs an archive RPC
+endpoint URL and the desired pool address (\texttt{data\_extraction.py extract all}). 
+The output data dictionary can be found in the repository's README.
 
-The main swap file, \path{swap_events.parquet}, contains 1,095,286 decoded swaps
-across 637,982 unique blocks.  The timestamp range is
-2025-10-01 00:00:11 UTC to 2026-03-31 23:59:59 UTC, so the file is bounded to
-the required six-month window.  Direction is nearly balanced: 534,929 swaps are
-\path{buy_weth} and 560,357 are \path{sell_weth}.  Aggregating absolute USDC
-notional gives total pool volume of \$21.39 billion over the sample, split
-almost evenly between buys (\$10.70 billion) and sells (\$10.69 billion).
+The main swap file, \path{swap_events.parquet}, contains \num{1,095,286} decoded swaps
+across 637,982 unique blocks. Their precise timestamp range is
+\date{2025-10-01 00:00:11 UTC} to \date{2026-03-31 23:59:59 UTC} meaning the file data is bounded by
+the required six-month window. The underlying cumulative swap volume is nearly balanced, with 534,929 swaps as
+\path{buy_weth} and 560,357 as \path{sell_weth}. Aggregating absolute USDC
+notional gives a total pool volume of \$$21.39$ billion USDC over the sample, split
+almost evenly between buys (\$10.70 billion) and sells (\$10.69 billion). 
+This allows us to compare with the decoded trade direction convention and 
+gives no indication of missing sign flips or decimal-scaling errors.
 
-The liquidity event file, \path{mint_burn_events.parquet}, contains 427,934
-events from deployment through the end of the study window: 204,398 Mints and
-223,536 Burns.  The support file \path{collect_events.parquet} contains 218,219
+In the liquidity event file, \path{mint_burn_events.parquet}, there are \num{427,934}
+events, from contract deployment through to the end of the study window, with \num{204,398} Mints and
+\num{223,536} Burns. The support file \path{collect_events.parquet} contains \num{218,219}
 Collect events over the same historical range and is used later for fee
-analytics.  The daily state files contain 182 midnight-UTC snapshots:
+analytics.  The daily state files contain \num{182} midnight-UTC snapshots, where
 \path{slot0_snapshots.parquet} stores the pool price and active tick, while
-\path{liquidity_snapshots.parquet} stores 264,149 initialized-tick rows, or
-about 1,451 ticks per snapshot on average.
+\path{liquidity_snapshots.parquet} stores \num{264,149} the initialized-tick rows,
+averaging around \num{1,451} ticks per snapshot.
 
 \subsection{Validation}
 \label{subsec:m1-validation}
 
-We first apply schema and coverage checks to every generated file.  The checks
-verify the PDF-required columns, reject duplicate event identities
+We first apply schema and coverage checks to every generated file. These checks
+verify the required columns, reject duplicate event identities
 (\path{tx_hash}, \path{log_index}), require valid tick spacing and Mint/Burn
-signs, and confirm that both slot0 and liquidity snapshots cover exactly 182
-daily blocks.  All checks pass on the submitted files.
+signs thereby confirming that both slot0 and liquidity snapshots cover exactly 182
+daily blocks. All checks pass on the submitted files.
 
 The volume cross-check aggregates decoded swaps by direction and compares the
 resulting totals against the event-level signs.  Since USDC is token0, a
-\path{buy_weth} swap has positive USDC flow into the pool and a \path{sell_weth}
-swap has positive WETH flow into the pool.  The aggregate absolute USDC amount
-equals the reported USD notional total, \$21.39 billion, and the buy/sell
-notional split differs by less than 0.2\%.  This is consistent with the decoded
-trade direction convention and gives no evidence of missing sign flips or
-decimal-scaling errors.  Table~\ref{tab:m1-volume} reports the cross-check by
-direction; the buy/sell notional split differs by only 0.061\%, and the
-aggregate absolute USDC amount equals the reported USD notional total to the
+\path{buy_weth} swap has positive USDC flow into the pool whereas a \path{sell_weth}
+swap has positive WETH flow into the pool. Therefore the aggregate absolute USDC amount
+equals the reported USD notional total, \$$21.39$ billion, and the buy/sell
+notional split differs by less than \num{0.2}\%.  Table~\ref{tab:m1-volume} reports the cross-check by
+direction with the buy/sell notional split differing by only \num{0.061}\%, and the
+aggregate absolute USDC amount equaling the reported USD notional total to the
 displayed precision.
 
 \begin{table}[t]
@@ -76,10 +74,10 @@ displayed precision.
 \end{table}
 
 We also compare each daily slot0 price with the most recent decoded swap price
-at or before the snapshot block.  The validation table contains 181 comparable
-snapshots; 180 are within the 1 bp tolerance used by the script.  The median
-absolute difference is 0.0000 bps, and the 95th percentile is 0.0018 bps.  The
-only larger row is 11.71 bps on the 2026-02-05 snapshot, where the comparison
+at or before the snapshot block. The validation table contains \num{181} comparable
+snapshots, \num{180} of these being within the 1 bp tolerance used by the script. The median
+absolute difference is \num{0.0000} bps, and the 95th percentile is \num{0.0018} bps.  The
+only larger row is \num{11.71} bps on the snapshot from \date{2026-02-05}, where the comparison
 swap is in the same block as the snapshot.  This appears to be a same-block
 ordering edge case in the diagnostic table rather than a systematic price
 conversion problem: the remaining comparisons are effectively exact.
@@ -106,16 +104,17 @@ Table~\ref{tab:m1-slot0} summarizes the full check, saved to
 \end{table}
 
 Finally, the reconstructed liquidity map is checked against direct archive
-\path{pool.ticks()} calls.  At snapshot block 23,479,243, we sampled 10
+\path{pool.ticks()} calls.  At snapshot block \num{23,479,243}, we sampled \num{10} 
 initialized ticks from \path{liquidity_snapshots.parquet} and queried the pool
 contract at that same historical block.  Both \path{liquidityGross} and
-\path{liquidityNet} matched exactly for all 10 sampled ticks.  This confirms
+\path{liquidityNet} matched exactly for all \num{10} sampled ticks. This confirms
 that replaying the Mint and Burn history reconstructs the on-chain tick state at
 the snapshot block, with no discrepancies found in the spot-check.
 Table~\ref{tab:m1-ticks} lists the sampled ticks; the persisted artifact
 \path{data/results/module_1/liquidity_tick_spot_check.parquet} contains the full
 reconstructed and on-chain values for both \path{liquidityGross} and
 \path{liquidityNet}, which are bit-for-bit equal for every sampled tick.
+
 
 \begin{table}[t]
     \centering

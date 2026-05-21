@@ -4,20 +4,20 @@
 
 Execution quality in a concentrated-liquidity AMM is shaped by where liquidity
 sits around the current price.  A deep pool can still be expensive to trade
-against if its liquidity is away from the active range, while a smaller pool can
+against if its liquidity is far away from the active range, while a smaller pool can
 offer tight execution if capital is concentrated near the marginal price.  This
 module turns the reconstructed Uniswap V3 state from Module 1 into a taker-side
-execution model for the USDC/WETH 0.05\% pool.  The study window runs from
-1 October 2025 to 31 March 2026.
+execution model for the USDC/WETH 0.05\% pool. Our study window runs from
+\date{1st October 2025} to \date{31st March 2026}.
 
 \subsection{Data Inputs}
 \label{subsec:m3-data}
 
-The simulator uses two state files from Module 1.  The liquidity snapshot file
-provides the initialized ticks, \path{liquidityNet}, and active liquidity at
+Our simulator uses two state files from Module 1, with the liquidity snapshot file
+providing the initialized ticks, \path{liquidityNet}, and active liquidity at
 each daily snapshot.  The slot0 snapshot file provides the matching
-\path{sqrtPriceX96}, current tick, and human-readable mid price.  There are 182
-daily snapshots in the sample.
+\path{sqrtPriceX96}, current tick, and human-readable mid price. There are 182
+daily snapshots in our sample.
 
 For the observed-swap comparison we use \path{swap_events.parquet}, which
 contains 1,095,286 swaps.  Effective spreads require the pool mid price just
@@ -29,7 +29,7 @@ sample of 25,000 unique swap blocks for the empirical comparison.  The sampling
 metadata is saved in \path{data/results/module_3/swap_mid_prices.metadata.json}.
 
 The subset was chosen at the block level and stratified by date, trade
-direction, and USD notional bucket.  This preserves the three dimensions that
+direction, and USD notional bucket. This preserves the three dimensions that
 matter most for the comparison: time variation in liquidity, buy-sell
 asymmetry, and trade-size composition.  It is also aligned with the estimator:
 because $p^{mid}$ is defined at the previous block, including more swaps from
@@ -148,9 +148,9 @@ To validate the simulator against real pool behavior, we use observed swaps
 that occur exactly one block after a daily snapshot block.  For these swaps,
 the reconstructed daily snapshot is the pre-swap state, so the simulator can be
 run with the actual observed input and compared directly with the event output.
-This gives 112 validation swaps across 81 distinct days.  The median absolute
-output error is $3.33\times10^{-8}$\%, the 95th percentile is 0.123\%, and the
-maximum is 0.188\%.  The small non-zero tail is concentrated in blocks with
+This gives us 112 validation swaps across 81 distinct days. The median absolute
+output error is $3.33\times10^{-8}$\%, the 95th percentile is 0.123\%, and a
+maximum of 0.188\%. Notably, the small non-zero tail is concentrated in blocks with
 multiple swaps, where later swaps in the block are affected by earlier swaps
 from the same block.
 

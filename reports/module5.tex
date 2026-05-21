@@ -35,7 +35,7 @@ The vertical gap between the two curves is the impermanent loss.
 \end{figure}
 
 The payoff is concave and resembles a \emph{short straddle}: the LP underperforms the HODL
-portfolio for any large move in either direction. The analogy is useful but not exact---there is
+portfolio for any large move in either direction. The analogy is useful but not exact due to the fact that there is
 no upfront premium. Compensation arrives as swap fees only while the price stays within the
 active range, and the payoff has finite inventory endpoints rather than the unbounded losses
 of a written option.
@@ -148,8 +148,8 @@ ETH perp close price over the study window.
 \paragraph{Strategy.}
 At each rebalance event the strategy opens a short ETH perpetual of size
 $q_t^{short} = \Delta_{LP}(p_t)$ ETH, offsetting the LP's long WETH exposure.
-Between rebalances the size is held static. Three rebalancing frequencies are tested---1h, 4h,
-and 24h---for each of the five LP positions, giving $5 \times 3 = 15$ strategy variants.
+Between rebalances the size is held static. Three rebalancing frequencies are tested: 1h, 4h,
+and 24h, for each of the five LP positions, giving us $5 \times 3 = 15$ strategy variants.
 
 \paragraph{Monte Carlo expected-delta variant.}
 As an extension, the fixed hedge size $\Delta_{LP}(p_t)$ is replaced by a forward-looking
@@ -250,7 +250,7 @@ A perpetual hedges delta but not gamma. A short-dated ETH put spread or straddle
 at the position's range boundaries would directly offset the concavity left unhedged by the
 perpetual, eliminating residual gamma risk entirely. The key assumptions required are
 sufficient options liquidity at the relevant strikes and tenors, and that implied volatility at
-the time of purchase is below the realised volatility over the hedge horizon---otherwise the
+the time of purchase is below the realised volatility over the hedge horizon, otherwise the
 option premium exceeds the gamma loss it prevents. With annualised realised volatility at
 $69\%$ over this study window, options merit serious consideration for the most concentrated
 positions, P1 and P2, where the gamma proxy exceeds \$2{,}500 and \$7{,}700 respectively.
