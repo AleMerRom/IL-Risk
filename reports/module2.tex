@@ -16,8 +16,9 @@ For each initialized tick, we convert the tick index into a human-readable price
 where the factor $10^{12}$ adjusts for the 6 decimals of USDC and 18 decimals of WETH.  The plotted liquidity 
 profile is the active liquidity after crossing each initialized tick.  Figure~\ref{fig:m2-profiles} shows three 
 representative snapshots: the start of the sample, on the 6th of February 2026 and the end of the sample. 
-We use the 6th of February 2026 as the high-volatility snapshot because it is the lowest ETH price and lowest 
-TVL day in our sample.
+The 6 February 2026 snapshot is chosen as the stress-day benchmark because ETH/USD exhibited the highest daily 
+volatility in our sample window according to external market data from Coinbase. Thismakes it a natural 
+date for testing whether Uniswap v3 liquidity remains concentrated near the active trading range during a period of elevated price uncertainty.
 
 These graphs show the liquidity distribution at around 20\% above and below the current price, as showing the liquidty 
 distribution across the entire price range, gives us a lower resolution landscape. We will therefore use this graph for 
@@ -30,11 +31,11 @@ the rest of the analysis, however the full-range version is shown Figure~\ref{fi
     \label{fig:m2-profiles}
 \end{figure}
 
-Our profiles show that liquidity is not uniformly distributed across prices. At the beginning of the window, when ETH 
-traded around \$\num{4,146}, most active liquidity was positioned below the current price. Remarkably, after the price decline into February 
-and March, liquidity became much more concentrated around the realized trading range near \$\num{2,000}. The monthly heatmaps in
-Figure~\ref{fig:m2-heatmaps} confirm this migration with late-sample liquidity being denser and closer to the price path than 
-in October--December.
+Our profiles show that liquidity is not uniformly distributed across prices. At the beginning of the sample, when ETH traded around
+\$\num{4,146}, active liquidity near the current price was relatively low because a large share of liquidity was positioned in a 
+persistent band around \$\num{2,000}. As ETH declined during the sample, the current price moved closer to this pre-existing liquidity 
+band, so the same liquidity became more relevant for execution. The monthly heatmaps in Figure~\ref{fig:m2-heatmaps} show this clearly: the \$\num{2,000}
+band is visible throughout the sample, while the price path progressively approaches and eventually overlaps with it in February and March.
 
 The graphs below show the liquidity distribution for each snapshot, using colour for concentration of liquidity, with the white line
 representing the current price. It is a tiled time-series graph, as it shows the heatmap for each day, in monthly groups. With this representation we 
