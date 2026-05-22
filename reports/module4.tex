@@ -93,19 +93,22 @@ rather than a full re-simulation of market execution with the synthetic LP added
 \paragraph{Relationship to the brief's prescribed formula.}
 The project brief prescribes allocating each swap's fees in proportion to
 $L_j/L_{\mathrm{active}}$, where $L_{\mathrm{active}}$ is the active liquidity
-recorded in the Swap event's \texttt{liquidity} field.  We deliberately deviate
-from this single-tick rule for two reasons.  First, the Swap event's
+recorded in the Swap event's \texttt{liquidity} field.  We report this
+brief-style calculation as a baseline, but implement it at interval level rather
+than at the final Swap-event tick. The reason is that the Swap event's
 \texttt{liquidity} field is the \emph{post-swap} active liquidity; for any swap
 that crosses one or more initialized ticks it does not describe the liquidity in
-force over the early part of the trade, so allocating the whole swap at that one
-value misattributes cross-tick flow.  Our interval-level replay instead charges
-each sub-interval at the liquidity actually active there.  Second, our LPs are
+force over the early part of the trade. Our interval-level replay therefore
+charges each sub-interval at the historical pool liquidity actually active
+there, while still preserving the brief's fee-growth denominator.
+
+We then add a second, more conservative counterfactual calculation. Our LPs are
 synthetic and were never part of the historical pool, so a synthetic entrant of
-size $L_j$ would itself have diluted every other LP's share; we therefore place
-$L_j$ in the fee-growth denominator ($L_{\mathrm{pool}}+L_j$) rather than using
-the historical $L_{\mathrm{active}}$ unchanged.  Both choices make the estimate a
-more accurate counterfactual than the literal single-tick rule, at the cost of
-no longer matching the brief's formula verbatim.
+size $L_j$ would itself have diluted every other LP's share. In this adjusted
+version we place $L_j$ in the fee-growth denominator
+($L_{\mathrm{pool}}+L_j$). Each representative position is evaluated
+independently, so the adjusted denominator includes the historical pool
+liquidity plus that one synthetic LP, not all five synthetic LPs at once.
 
 \paragraph{Interval fee growth.}
 With fee rate $f=0.0005$, each swap interval contributes fees in exactly one
@@ -126,29 +129,32 @@ liquidity.
 \paragraph{Synthetic LP fee growth.}
 For position $j$ with liquidity $L_j$, interval $k$ earns fees only if its tick
 is in $[\mathrm{tick}^{(j)}_{\mathrm{lower}},\mathrm{tick}^{(j)}_{\mathrm{upper}})$.
-Because the LP is synthetic, its liquidity is added to the fee-growth
-denominator. Each representative position is evaluated independently, so the
-denominator includes the historical pool liquidity plus that one synthetic LP,
-not all five synthetic LPs at once:
+The brief-style fee-growth calculation is:
 \[
-\Delta g^{C}_{i,k,j}=\frac{F^{C}_{i,k}}{L_{\mathrm{pool},k}+L_j},
+\Delta g^{C,\mathrm{brief}}_{i,k,j}=\frac{F^{C}_{i,k}}{L_{\mathrm{pool},k}},
 \qquad
-\Delta g^{E}_{i,k,j}=\frac{F^{E}_{i,k}}{L_{\mathrm{pool},k}+L_j},
+\Delta g^{E,\mathrm{brief}}_{i,k,j}=\frac{F^{E}_{i,k}}{L_{\mathrm{pool},k}}.
 \]
-and
+The synthetic-liquidity-adjusted calculation is:
 \[
-\mathrm{Fee}^{C}_{i,k,j}=L_j\,\Delta g^{C}_{i,k,j},
+\Delta g^{C,\mathrm{adj}}_{i,k,j}=\frac{F^{C}_{i,k}}{L_{\mathrm{pool},k}+L_j},
 \qquad
-\mathrm{Fee}^{E}_{i,k,j}=L_j\,\Delta g^{E}_{i,k,j}.
+\Delta g^{E,\mathrm{adj}}_{i,k,j}=\frac{F^{E}_{i,k}}{L_{\mathrm{pool},k}+L_j}.
 \]
-We aggregate token fees between daily snapshot blocks and report cumulative
-USDC fees, cumulative WETH fees, and their USD value:
+For either variant $v\in\{\mathrm{brief},\mathrm{adj}\}$, token fees are:
 \[
-\mathrm{FeeUSD}_j(t)=
+\mathrm{Fee}^{C,v}_{i,k,j}=L_j\,\Delta g^{C,v}_{i,k,j},
+\qquad
+\mathrm{Fee}^{E,v}_{i,k,j}=L_j\,\Delta g^{E,v}_{i,k,j}.
+\]
+We aggregate token fees between daily snapshot blocks and report cumulative USDC
+fees, cumulative WETH fees, and their USD value for both variants:
+\[
+\mathrm{FeeUSD}^{v}_j(t)=
 \sum_{i,k\le t}
 \left(
-\mathrm{Fee}^{C}_{i,k,j}
-+p_{i,k}\,\mathrm{Fee}^{E}_{i,k,j}
+\mathrm{Fee}^{C,v}_{i,k,j}
++p_{i,k}\,\mathrm{Fee}^{E,v}_{i,k,j}
 \right),
 \]
 where $p_{i,k}$ is the USDC/WETH price during the swap interval. This matches
@@ -173,9 +179,10 @@ V_{\mathrm{LP}}(t) = C_t + p_t\,E_t,
 where $(C_t,E_t)$ are the Uniswap V3 virtual reserves implied by the fixed
 liquidity $L$ and the current price relative to the position range (below,
 within, or above). Finally, we report a net metric consistent with the project
-brief:
+brief for both fee variants:
 \[
-\mathrm{Net}(t) = \mathrm{CumulativeFees}(t) - \mathrm{IL}(t).
+\mathrm{Net}^{v}(t) = \mathrm{FeeUSD}^{v}(t) - \mathrm{IL}(t),
+\qquad v\in\{\mathrm{brief},\mathrm{adj}\}.
 \]
 
 \subsection{Results}
@@ -183,7 +190,7 @@ brief:
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_4/figures/module4_cumulative_fee_income.png}
-    \caption{Fig 4.1 --- Cumulative fee income time series for the five representative LP positions.}
+    \caption{Fig 4.1 --- Adjusted cumulative fee income time series for the five representative LP positions.}
     \label{fig:m4-fees}
 \end{figure}
 
@@ -197,12 +204,14 @@ brief:
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{../data/results/module_4/figures/module4_net_fee_minus_il.png}
-    \caption{Fig 4.3 --- Cumulative fee income minus impermanent loss for each position.}
+    \caption{Fig 4.3 --- Adjusted cumulative fee income minus impermanent loss for each position.}
     \label{fig:m4-net}
 \end{figure}
 
 \paragraph{Final performance summary.}
 Table~\ref{tab:m4-summary} reports the end-of-window values on 31 March 2026.
+``Brief fees'' use the project brief's historical pool denominator, while
+``Adj. fees'' add the representative LP's synthetic liquidity to the denominator.
 The pool price fell from \$4{,}145.56 per WETH at entry to \$2{,}024.66 at
 exit, so all concentrated LP positions ended above their upper WETH price
 range and were fully converted into WETH.  This explains why fee income is not
@@ -217,36 +226,38 @@ move.
     \small
     \begin{tabular}{lrrrrrr}
         \hline
-        ID & In-range snaps. & Fee USDC & Fee WETH & Fees (\$) & IL (\$) & Fees $-$ IL (\$) \\
+        ID & In-range & Brief fees & Adj. fees & IL & Brief net & Adj. net \\
         \hline
-        P1 & 1   & 4{,}228.21 & 1.0164 &  8{,}441.29 & 30{,}800.18 & -22{,}358.88 \\
-        P2 & 4   & 5{,}194.33 & 1.2573 & 10{,}403.54 & 26{,}934.79 & -16{,}531.25 \\
-        P3 & 5   & 4{,}159.86 & 1.0134 &  8{,}343.72 & 25{,}703.24 & -17{,}359.53 \\
-        P4 & 33  & 4{,}672.68 & 1.1717 &  9{,}372.37 & 25{,}379.44 & -16{,}007.07 \\
-        P5 & 182 & 1{,}227.68 & 0.4371 &  2{,}463.26 &  4{,}534.54 &  -2{,}071.28 \\
+        P1 & 1   & 13{,}885.44 &  8{,}441.29 & 30{,}800.18 & -16{,}914.74 & -22{,}358.88 \\
+        P2 & 4   & 12{,}276.66 & 10{,}403.54 & 26{,}934.79 & -14{,}658.13 & -16{,}531.25 \\
+        P3 & 5   &  8{,}775.01 &  8{,}343.72 & 25{,}703.24 & -16{,}928.24 & -17{,}359.53 \\
+        P4 & 33  &  9{,}484.54 &  9{,}372.37 & 25{,}379.44 & -15{,}894.90 & -16{,}007.07 \\
+        P5 & 182 &  2{,}464.76 &  2{,}463.26 &  4{,}534.54 &  -2{,}069.78 &  -2{,}071.28 \\
         \hline
     \end{tabular}
 \end{table}
 
-The ``In-range snaps.'' column counts the daily midnight snapshots whose pool
+The ``In-range'' column counts the daily midnight snapshots whose pool
 tick fell inside $[\mathrm{tick}_{\mathrm{lower}},\mathrm{tick}_{\mathrm{upper}})$.
-It is only a daily sampling of position state, not the fee-earning window: fees
+It is only a daily sampling of position state, not the fee-earning window. Fees
 accrue continuously on the replayed intra-day swap path, so a narrow position
-such as P1 can earn substantial fees (\$8.4k) even though the price sat inside
-its band at only one midnight snapshot, because price crossed back and forth
-through the band intraday.
+such as P1 can earn substantial fees even though the price sat inside its band at
+only one midnight snapshot, because price crossed back and forth through the band
+intraday.
 
 The fee ranking illustrates the central trade-off in concentrated liquidity.
-P1 has the highest liquidity density when active, but the interval-level
-fee-growth replay shows that it is too narrow to capture much of the cross-range trading flow.
-It is active for only one daily snapshot and finishes with \$8.4k of fees. P2
-earns the most, about \$10.4k, because it still concentrates capital tightly
-while capturing more flow near the entry price. P3 and P4 spread capital over
-wider intervals; P4 is active for 33 days and therefore slightly out-earns P3,
-but both give up fee share per dollar relative to the narrower bands. P5 is
-active for the entire period but earns the least, because the full-range
-position is closest to passive V2-style liquidity and has the lowest fee share
-per dollar deposited.
+Under the brief-style denominator, P1 has the highest fee estimate
+(\$13.9k), because its liquidity is very dense when active. Under the adjusted
+counterfactual, P1 falls to \$8.4k because the synthetic liquidity is large
+relative to the historical pool liquidity in that narrow band, so adding it to
+the denominator materially dilutes its own fee share. P2 earns the most adjusted
+fees, about \$10.4k, because it still concentrates capital tightly while
+capturing more flow near the entry price. P3 and P4 spread capital over wider
+intervals; P4 is active for 33 days and therefore slightly out-earns P3 in the
+adjusted series, but both give up fee share per dollar relative to the narrower
+bands. P5 is active for the entire period but earns the least, because the
+full-range position is closest to passive V2-style liquidity and has the lowest
+fee share per dollar deposited.
 
 The IL profile moves in the opposite direction.  The narrow positions are
 shorter gamma around the initial price: when ETH sells off, they quickly become
@@ -269,4 +280,3 @@ bit-exact on-chain accounting.  As noted above, the synthetic LP enters the
 fee-growth denominator but does not alter the historical swap path, so the
 numbers answer ``what would this position have earned and lost,'' not ``how
 would the market have executed differently had this LP been present.''
-

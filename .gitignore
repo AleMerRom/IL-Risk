@@ -2,8 +2,12 @@
 data/_archive/
 data/archive/
 data/checkpoints/
-data/processed/exports
-data/processed/
+data/processed/*
+!data/processed/collect_events.parquet
+!data/processed/liquidity_snapshots.parquet
+!data/processed/mint_burn_events.parquet
+!data/processed/slot0_snapshots.parquet
+!data/processed/swap_events.parquet
 data/raw/*/
 data/**/*.sqlite
 data/**/*.sqlite-shm

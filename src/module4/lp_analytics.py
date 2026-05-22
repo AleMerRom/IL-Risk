@@ -31,6 +31,30 @@ _Q96_DECIMAL = Decimal(Q96)
 _USDC_RAW_SCALE_DECIMAL = Decimal(USDC_RAW_SCALE)
 _WETH_RAW_SCALE_DECIMAL = Decimal(WETH_RAW_SCALE)
 _RAW_PRICE_SCALE_DECIMAL = Decimal(RAW_PRICE_SCALE)
+_FEE_EVENT_COLUMNS = [
+    "fee0_usdc",
+    "fee1_weth",
+    "fee_usd",
+    "fee0_usdc_brief",
+    "fee1_weth_brief",
+    "fee_usd_brief",
+]
+_CUMULATIVE_FEE_COLUMNS = [
+    "cumulative_fee0_usdc",
+    "cumulative_fee1_weth",
+    "cumulative_fee_usd",
+    "cumulative_fee0_usdc_brief",
+    "cumulative_fee1_weth_brief",
+    "cumulative_fee_usd_brief",
+]
+_DAILY_FEE_COLUMNS = [
+    "daily_fee0_usdc",
+    "daily_fee1_weth",
+    "daily_fee_usd",
+    "daily_fee0_usdc_brief",
+    "daily_fee1_weth_brief",
+    "daily_fee_usd_brief",
+]
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -176,16 +200,12 @@ def run_lp_analytics(
         how="left",
         validate="one_to_one",
     )
-    timeseries["daily_fee_usd"] = timeseries["daily_fee_usd"].fillna(0.0)
-    timeseries["cumulative_fee_usd"] = timeseries["cumulative_fee_usd"].fillna(0.0)
-    for column in [
-        "daily_fee0_usdc",
-        "daily_fee1_weth",
-        "cumulative_fee0_usdc",
-        "cumulative_fee1_weth",
-    ]:
+    for column in _DAILY_FEE_COLUMNS + _CUMULATIVE_FEE_COLUMNS:
         timeseries[column] = timeseries[column].fillna(0.0)
     timeseries["net_fee_minus_il_usd"] = timeseries["cumulative_fee_usd"] - timeseries["impermanent_loss_usd"]
+    timeseries["net_fee_minus_il_usd_brief"] = (
+        timeseries["cumulative_fee_usd_brief"] - timeseries["impermanent_loss_usd"]
+    )
     timeseries = timeseries[
         [
             "position_id",
@@ -202,10 +222,17 @@ def run_lp_analytics(
             "daily_fee0_usdc",
             "daily_fee1_weth",
             "daily_fee_usd",
+            "daily_fee0_usdc_brief",
+            "daily_fee1_weth_brief",
+            "daily_fee_usd_brief",
             "cumulative_fee0_usdc",
             "cumulative_fee1_weth",
             "cumulative_fee_usd",
+            "cumulative_fee0_usdc_brief",
+            "cumulative_fee1_weth_brief",
+            "cumulative_fee_usd_brief",
             "net_fee_minus_il_usd",
+            "net_fee_minus_il_usd_brief",
         ]
     ].sort_values(["position_id", "snapshot_block"])
 
@@ -237,8 +264,9 @@ def compute_fee_income_timeseries(
     keep the historical liquidity map current, and split each swap across pool
     tick boundaries plus the synthetic LP range boundaries.  For each interval,
     token0/token1 fees increment fee growth per unit liquidity.  Each synthetic
-    LP is treated as a counterfactual single entrant, so its fee-growth
-    denominator is ``L_pool + L_position`` while it is active.
+    LP is treated two ways: the ``*_brief`` columns use the project brief's
+    historical pool denominator, and the main fee columns use the counterfactual
+    ``L_pool + L_position`` denominator while the position is active.
     """
 
     snapshots = slot0[
@@ -304,9 +332,15 @@ def compute_fee_income_timeseries(
             "daily_fee0_usdc",
             "daily_fee1_weth",
             "daily_fee_usd",
+            "daily_fee0_usdc_brief",
+            "daily_fee1_weth_brief",
+            "daily_fee_usd_brief",
             "cumulative_fee0_usdc",
             "cumulative_fee1_weth",
             "cumulative_fee_usd",
+            "cumulative_fee0_usdc_brief",
+            "cumulative_fee1_weth_brief",
+            "cumulative_fee_usd_brief",
         ]
     ]
 
@@ -389,9 +423,7 @@ def _replay_fee_events(
         state.active_liquidity = _to_decimal(event["active_liquidity"])
 
     if not rows:
-        return pd.DataFrame(
-            columns=["block_number", "position_id", "fee0_usdc", "fee1_weth", "fee_usd"]
-        )
+        return pd.DataFrame(columns=["block_number", "position_id", *_FEE_EVENT_COLUMNS])
     return pd.DataFrame(rows)
 
 
@@ -491,17 +523,28 @@ def _fee_rows_for_swap(
         fee_raw = gross_used * fee_rate
         if fee_raw > 0:
             fee0_raw, fee1_raw = _fee_raw_by_token(fee_raw, input_scale)
+            interval_price = _human_price_from_sqrt_decimal(local_state.sqrt_price)
             for position in positions:
                 if _position_active(position, local_state.current_tick):
                     position_liquidity = _to_decimal(position["liquidity_raw"])
-                    denominator = local_state.active_liquidity + position_liquidity
-                    if denominator > 0:
-                        fee0_growth = fee0_raw / denominator
-                        fee1_growth = fee1_raw / denominator
-                        fee0_usdc = position_liquidity * fee0_growth / _USDC_RAW_SCALE_DECIMAL
-                        fee1_weth = position_liquidity * fee1_growth / _WETH_RAW_SCALE_DECIMAL
-                        fee_usd = fee0_usdc + fee1_weth * _human_price_from_sqrt_decimal(
-                            local_state.sqrt_price
+                    denominator_brief = local_state.active_liquidity
+                    denominator_adjusted = local_state.active_liquidity + position_liquidity
+                    if denominator_brief > 0 and denominator_adjusted > 0:
+                        fee0_usdc_brief, fee1_weth_brief, fee_usd_brief = (
+                            _position_fee_amounts(
+                                fee0_raw,
+                                fee1_raw,
+                                position_liquidity,
+                                denominator_brief,
+                                interval_price,
+                            )
+                        )
+                        fee0_usdc, fee1_weth, fee_usd = _position_fee_amounts(
+                            fee0_raw,
+                            fee1_raw,
+                            position_liquidity,
+                            denominator_adjusted,
+                            interval_price,
                         )
                         rows.append(
                             {
@@ -510,6 +553,9 @@ def _fee_rows_for_swap(
                                 "fee0_usdc": float(fee0_usdc),
                                 "fee1_weth": float(fee1_weth),
                                 "fee_usd": float(fee_usd),
+                                "fee0_usdc_brief": float(fee0_usdc_brief),
+                                "fee1_weth_brief": float(fee1_weth_brief),
+                                "fee_usd_brief": float(fee_usd_brief),
                             }
                         )
 
@@ -521,6 +567,19 @@ def _fee_rows_for_swap(
     return rows
 
 
+def _position_fee_amounts(
+    fee0_raw: Decimal,
+    fee1_raw: Decimal,
+    position_liquidity: Decimal,
+    denominator: Decimal,
+    interval_price: Decimal,
+) -> tuple[Decimal, Decimal, Decimal]:
+    fee0_usdc = position_liquidity * (fee0_raw / denominator) / _USDC_RAW_SCALE_DECIMAL
+    fee1_weth = position_liquidity * (fee1_raw / denominator) / _WETH_RAW_SCALE_DECIMAL
+    fee_usd = fee0_usdc + fee1_weth * interval_price
+    return fee0_usdc, fee1_weth, fee_usd
+
+
 def _fees_at_snapshots(
     snapshots: pd.DataFrame,
     fee_events: pd.DataFrame,
@@ -529,46 +588,34 @@ def _fees_at_snapshots(
     position_snapshots = snapshots.copy()
     position_events = fee_events[fee_events["position_id"] == position_id]
     if position_events.empty:
-        position_snapshots["cumulative_fee0_usdc"] = 0.0
-        position_snapshots["cumulative_fee1_weth"] = 0.0
-        position_snapshots["cumulative_fee_usd"] = 0.0
+        for column in _CUMULATIVE_FEE_COLUMNS:
+            position_snapshots[column] = 0.0
     else:
         cumulative = (
-            position_events.groupby("block_number", as_index=False)[
-                ["fee0_usdc", "fee1_weth", "fee_usd"]
-            ]
+            position_events.groupby("block_number", as_index=False)[_FEE_EVENT_COLUMNS]
             .sum()
             .sort_values("block_number")
         )
         cumulative["cumulative_fee0_usdc"] = cumulative["fee0_usdc"].cumsum()
         cumulative["cumulative_fee1_weth"] = cumulative["fee1_weth"].cumsum()
         cumulative["cumulative_fee_usd"] = cumulative["fee_usd"].cumsum()
+        cumulative["cumulative_fee0_usdc_brief"] = cumulative["fee0_usdc_brief"].cumsum()
+        cumulative["cumulative_fee1_weth_brief"] = cumulative["fee1_weth_brief"].cumsum()
+        cumulative["cumulative_fee_usd_brief"] = cumulative["fee_usd_brief"].cumsum()
         position_snapshots = pd.merge_asof(
             position_snapshots,
-            cumulative[
-                [
-                    "block_number",
-                    "cumulative_fee0_usdc",
-                    "cumulative_fee1_weth",
-                    "cumulative_fee_usd",
-                ]
-            ],
+            cumulative[["block_number", *_CUMULATIVE_FEE_COLUMNS]],
             left_on="snapshot_block",
             right_on="block_number",
             direction="backward",
         )
-        for column in ["cumulative_fee0_usdc", "cumulative_fee1_weth", "cumulative_fee_usd"]:
+        for column in _CUMULATIVE_FEE_COLUMNS:
             position_snapshots[column] = position_snapshots[column].fillna(0.0)
         position_snapshots = position_snapshots.drop(columns=["block_number"])
-    position_snapshots["daily_fee0_usdc"] = position_snapshots["cumulative_fee0_usdc"].diff().fillna(
-        position_snapshots["cumulative_fee0_usdc"]
-    )
-    position_snapshots["daily_fee1_weth"] = position_snapshots["cumulative_fee1_weth"].diff().fillna(
-        position_snapshots["cumulative_fee1_weth"]
-    )
-    position_snapshots["daily_fee_usd"] = position_snapshots["cumulative_fee_usd"].diff().fillna(
-        position_snapshots["cumulative_fee_usd"]
-    )
+    for daily_column, cumulative_column in zip(_DAILY_FEE_COLUMNS, _CUMULATIVE_FEE_COLUMNS):
+        position_snapshots[daily_column] = position_snapshots[cumulative_column].diff().fillna(
+            position_snapshots[cumulative_column]
+        )
     position_snapshots["position_id"] = position_id
     return position_snapshots
 
@@ -713,8 +760,8 @@ def plot_module4_figures(
     _plot_timeseries(
         timeseries,
         y="cumulative_fee_usd",
-        ylabel="Cumulative fee income (USD)",
-        title="Module 4 Fig 4.1 — Cumulative fee income",
+        ylabel="Adjusted cumulative fee income (USD)",
+        title="Module 4 Fig 4.1 — Adjusted cumulative fee income",
         output_path=fig1,
         label_map=label_map,
         plt=plt,
@@ -733,8 +780,8 @@ def plot_module4_figures(
     _plot_timeseries(
         timeseries,
         y="net_fee_minus_il_usd",
-        ylabel="Cumulative fee income - IL (USD)",
-        title="Module 4 Fig 4.3 — Fee income net of impermanent loss",
+        ylabel="Adjusted cumulative fee income - IL (USD)",
+        title="Module 4 Fig 4.3 — Adjusted fee income net of impermanent loss",
         output_path=fig3,
         label_map=label_map,
         plt=plt,

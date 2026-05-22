@@ -125,6 +125,9 @@ def test_fee_income_adds_synthetic_liquidity_to_denominator() -> None:
     assert p1_end["cumulative_fee_usd"] == 2.5
     assert p1_end["cumulative_fee0_usdc"] == 2.5
     assert p1_end["cumulative_fee1_weth"] == 0.0
+    assert p1_end["cumulative_fee_usd_brief"] == 5.0
+    assert p1_end["cumulative_fee0_usdc_brief"] == 5.0
+    assert p1_end["cumulative_fee1_weth_brief"] == 0.0
 
 
 def test_fee_income_splits_swap_at_synthetic_range_boundary() -> None:
@@ -201,6 +204,7 @@ def test_fee_income_splits_swap_at_synthetic_range_boundary() -> None:
     assert 0 < p1_end["cumulative_fee_usd"] < whole_swap_half_share_fee
     assert p1_end["cumulative_fee0_usdc"] == 0.0
     assert p1_end["cumulative_fee1_weth"] > 0
+    assert p1_end["cumulative_fee_usd_brief"] > p1_end["cumulative_fee_usd"]
 
 
 def test_fee_income_crosses_exact_upper_boundary_before_buy_interval() -> None:
@@ -276,3 +280,4 @@ def test_fee_income_crosses_exact_upper_boundary_before_buy_interval() -> None:
     assert p1_end["cumulative_fee_usd"] > 0
     assert p1_end["cumulative_fee0_usdc"] > 0
     assert p1_end["cumulative_fee1_weth"] == 0.0
+    assert p1_end["cumulative_fee_usd_brief"] > p1_end["cumulative_fee_usd"]
