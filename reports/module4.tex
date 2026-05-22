@@ -219,6 +219,15 @@ enough to offset IL for P1--P4: the positions earn fees only while active, but
 the final mark-to-market loss relative to HODL remains large after the price
 move.
 
+This fixed-range construction should therefore be read as a passive benchmark,
+not as a professional active LP strategy. A fixed Uniswap V3 range is closer to
+a finite inventory range order than to market making forever: once the price
+leaves the range, the LP earns no further fees, holds one-sided inventory, and
+continues carrying directional exposure. The experiment isolates the payoff and
+IL mechanics of concentrated liquidity, but an actively managed LP would
+periodically recenter, widen, or withdraw liquidity after the market moves away
+from the position.
+
 \begin{table}[t]
     \centering
     \caption{Module 4 final LP performance by representative position.}

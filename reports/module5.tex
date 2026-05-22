@@ -219,6 +219,97 @@ P5 & $-$1\,319  & 220 & $-$1\,452  & 127 & $-$1\,317  &  67 \\
 \end{tabular}
 \end{table}
 
+\subsection{Active Exit-Recentering Extension}
+\label{sec:module5-active-recenter}
+
+\paragraph{Motivation.}
+The fixed-range LPs in Module~4 are passive positions: each range is entered at
+the first snapshot and held until the final snapshot. This is a useful benchmark,
+but it is not a complete model of active market making. Once the ETH price leaves
+a Uniswap V3 range, the position earns no further swap fees and holds one-sided
+inventory. A natural active rule is therefore to withdraw and redeploy the same
+range width around the current price when the old range is out of range.
+
+\paragraph{Strategy design.}
+For each finite-width position P1--P4, the active strategy starts with the same
+\$100{,}000 deposit and same width $k$ as Module~4. At each hourly Hyperliquid
+timestamp it marks the LP position, accrues swap-fee income from historical
+Uniswap swaps whose tick lies inside the current range, and checks whether the
+hourly close is outside the range. If it is, the strategy withdraws, pays
+rebalancing costs, swaps into the token ratio required by a fresh range, and
+redeploys:
+\[
+[p_a,p_b]=[p_t(1-k),\,p_t(1+k)].
+\]
+Costs include the 5 bps Uniswap swap fee on the token notional required to
+restore the new LP ratio, a \$25 gas estimate per recenter, optional slippage
+(set to zero in the baseline), and Hyperliquid taker fees on hedge adjustments.
+
+\paragraph{HODL-tracking hedge.}
+The active extension also tests a hedge that tracks the original HODL basket
+rather than merely neutralising the LP's ETH delta. Let $E_0$ be the initial WETH
+amount of the Module~4 deposit. The signed long ETH hedge target is
+\[
+q_t = E_0 - \Delta_{LP,t}.
+\]
+Equivalently, under the code's short-positive convention,
+$q_t^{short}=\Delta_{LP,t}-E_0$. The hedge is recomputed after every hourly mark
+and after every LP recenter. Performance is measured against the original HODL
+benchmark:
+\[
+\text{Net}_t =
+V_{LP,t}+\text{Fees}_t+\text{HedgePnL}_t - V_{HODL,t}.
+\]
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.95\textwidth]{../data/results/module_5/figures/module5_active_recenter_results.png}
+    \caption{Terminal net value versus the original HODL basket for passive fixed-range
+             LPs and active exit-recentered LPs, with and without the HODL-tracking hedge.}
+    \label{fig:module5-active-recenter}
+\end{figure}
+
+\begin{table}[h]
+\centering
+\caption{Terminal net value versus HODL for passive and active-recentered LP strategies (USD).}
+\label{tab:module5-active-recenter}
+\small
+\begin{tabular}{lrrrr}
+\hline
+Position & Passive & Passive + hedge & Active & Active + hedge \\
+\hline
+P1 & $-$20\,886 & $-$5\,209 & $-$33\,002 & $-$54\,936 \\
+P2 & $-$15\,203 & $-$1\,645 & $-$13\,447 & $-$36\,968 \\
+P3 & $-$16\,257 & $-$858  & $-$1\,166  & $-$20\,584 \\
+P4 & $-$14\,894 & $-$384  &  6\,277    & $-$4\,930 \\
+\hline
+\end{tabular}
+\end{table}
+
+The extension shows why re-entering must be interpreted as an active trading
+strategy, not as a way to remove IL. Recentering restores fee-earning capacity:
+active fee income rises to \$47.4k for P1, \$63.3k for P2, \$72.1k for P3, and
+\$38.8k for P4. But the narrow ranges churn heavily. P1 recenters 3,245 times
+and pays \$87.9k in LP rebalancing costs; P2 recenters 1,483 times and pays
+\$41.8k. Wider ranges rebalance less often: P3 recenters 303 times, while P4
+recenters only 17 times and is the only active no-hedge strategy to finish above
+HODL in this baseline. The HODL-tracking hedge helps passive fixed ranges during
+the downward trend, but it hurts the active recentered strategies here because
+the repeated inventory resets and hedge adjustments create path-dependent losses.
+Thus re-entering increases fee income, but it also realizes inventory changes and
+introduces swap, gas, slippage, and hedge-adjustment costs.
+
+A less reactive threshold rule improves this trade-off. In this variant the LP
+recenters only when price has moved at least 50\% of the range half-width from
+the current center, a 24-hour cooldown has elapsed, and the trailing 24-hour
+in-range fee estimate exceeds the estimated rebalance cost. The hedge is also
+made deliberately lazy with a 5 ETH no-trade band. Under this cost-aware rule,
+P4 finishes at +\$3.1k versus HODL both with and without the HODL-tracking hedge,
+after 57 recenters. The hedge adds almost no value in this case (net hedge P\&L
+is -\$37), but it also no longer destroys the strategy. A sensitivity run with a
+75\% threshold and 48-hour cooldown gives the strongest unhedged result, P2 at
++\$24.0k versus HODL and P4 at +\$7.2k, but the hedged versions remain weaker.
+
 \subsection{Limitations and Critical Discussion (Task 5.4)}
 \label{sec:module5-limitations}
 

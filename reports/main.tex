@@ -117,13 +117,16 @@ cumulative fees did not offset impermanent loss while every position ended with 
 full-range position earned the least in fees but lost the least overall, while concentrated positions earned 
 more fees yet suffered materially larger IL. Delta hedging with ETH perpetuals reduced residual exposure 
 but did not restore profitability, because discrete hedges leave gamma risk, incur trading costs, and receive 
-the least funding support during large-move periods.
+the least funding support during large-move periods. The active-recentering extension confirms the same
+trade-off from another angle: re-entering can restore fee-earning capacity, but narrow ranges churn so often
+that swap, gas, and hedge-adjustment costs can overwhelm the additional fees.
 
 Several limitations bound these conclusions. The swap simulator uses daily snapshots and abstracts from gas, 
 multi-hop routing, private order flow, and same-block strategic behaviour. The observed effective-spread 
-comparison is based on a stratified block sample rather than every swap block.The LP analysis is counterfactual: 
+comparison is based on a stratified block sample rather than every swap block. The LP analysis is counterfactual:
 synthetic liquidity is included in the fee denominator, but the historical swap path is held fixed. The hedging 
-backtest also uses simplified trading costs and discrete rebalancing. These choices make the results interpretable and 
+backtest also uses simplified trading costs and discrete rebalancing. The active-recentering extension uses an
+hourly rule and an event-level fee proxy rather than a full endogenous pool simulation. These choices make the results interpretable and
 reproducible, but not a full equilibrium model of how the pool would have evolved under different liquidity provision.
 
 Overall, the study shows that concentrated liquidity cannot be evaluated by TVL alone. During this window, liquidity 

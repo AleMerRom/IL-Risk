@@ -150,6 +150,28 @@ export ZEROXARCHIVE_API_KEY=<your-key>
 PYTHONPATH=src python src/module5/hyperliquid_collector.py collect-all --source 0xarchive
 ```
 
+## Module 5 hedge and active LP backtests
+
+The analytical delta hedge and the active exit-recentered LP extension both live
+in `src/module5/hedge_backtest.py`.
+
+```bash
+PYTHONPATH=src python src/module5/hedge_backtest.py run
+PYTHONPATH=src python src/module5/hedge_backtest.py run-active-recenter
+PYTHONPATH=src python src/module5/hedge_backtest.py run-threshold-recenter
+```
+
+`run-threshold-recenter` defaults to the cost-aware P4 variant: 50% of half-width
+drift trigger, 24h recenter cooldown, trailing-24h fee filter, and a 5 ETH
+no-trade band for the HODL-tracking hedge.
+
+The active extensions write:
+
+- `data/results/module_5/active_recentered_lp_results.parquet`
+- `data/results/module_5/figures/module5_active_recenter_results.png`
+- `data/results/module_5/threshold_recentered_lp_results.parquet`
+- `data/results/module_5/figures/module5_threshold_recenter_results.png`
+
 The collector also accepts `ZEROARCHIVE_API_KEY`, `OXARCHIVE_API_KEY`, and `OXA_API_KEY`
 for compatibility with existing local env files and the 0xArchive CLI/MCP docs.
 
